@@ -106,7 +106,9 @@ function printStatus(ns, disabled) {
   }
   ns.print("────────────────────────────────────────────");
   // Count workers
-  var allHosts = ["home"].concat(ns.getPurchasedServers());
+  var rooted = [];
+  try { rooted = JSON.parse(ns.read("/data/rooted.txt")); } catch(e) {}
+  var allHosts = ["home"].concat(ns.getPurchasedServers(), rooted);
   var loopTargets = {};
   var batchTargets = {};
   var totalLoop = 0;
@@ -319,14 +321,14 @@ async function writeDeploy(ns) {
     "  for (var hi = 0; hi < allHosts.length; hi++) {",
     "    var host = allHosts[hi];",
     "    if (!ns.serverExists(host)) continue;",
-    "    if (ns.hasRootAccess(host)) { rooted.push(host); continue; }",
+    "    if (!ns.hasRootAccess(host)) continue;",
     "    if (host !== 'home') {",
     "      await ns.scp(['/w-weak.js', '/w-grow.js', '/w-hack.js'], host, 'home');",
     "    }",
     "",
     "    // Reserve RAM on home for daemon + modules + batch controller",
     "    var homeMax = ns.getServerMaxRam('home');",
-    "    var reserved = host === 'home' ? Math.max(32, Math.min(128, homeMax * 0.15)) : 0;",
+    "    var reserved = host === 'home' ? Math.min(homeMax * 0.15, 8) : 0;",
     "    var maxRam = ns.getServerMaxRam(host);",
     "    if (maxRam <= 0) continue;",
     "",
@@ -471,7 +473,7 @@ async function writeBatch(ns) {
     "    }",
     "    if (!batchHost) {",
     "      var homeMax = ns.getServerMaxRam('home');",
-    "      var homeReserve = Math.max(32, Math.min(128, homeMax * 0.15));",
+    "      var homeReserve = Math.min(homeMax * 0.15, 8);",
     "      var homeFree = homeMax - ns.getServerUsedRam('home') - homeReserve;",
     "      if (homeFree >= totalRam) batchHost = 'home';",
     "    }",
