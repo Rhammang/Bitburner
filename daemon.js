@@ -43,6 +43,12 @@ export async function main(ns) {
   await ns.write(DATA_DIR + "rooted.txt", "[]", "w");
   await ns.write(DATA_DIR + "targets.txt", "[]", "w");
   await ns.write(DATA_DIR + "prepped.txt", "[]", "w");
+  await ns.write(DATA_DIR + "stocks_status.txt", "waiting-tix", "w");
+  await ns.write(DATA_DIR + "module_status.json", JSON.stringify({
+    root: { state: "init" },
+    deploy: { state: "init" },
+    stocks: { state: "init" }
+  }, null, 2), "w");
 
   for (var m of MODULES) {
     ns.rm(DATA_DIR + "disabled_" + m.file);
@@ -51,6 +57,13 @@ export async function main(ns) {
   var disabled = new Set();
   var lastRun = {};
   for (var m of MODULES) lastRun[m.file] = 0;
+  var liteLastRun = { "root-lite.js": 0, "deploy-lite.js": 0 };
+  var bootState = { rootReady: false, deployReady: false };
+  var moduleStatus = {
+    root: { state: "init" },
+    deploy: { state: "init" },
+    stocks: { state: "init" }
+  };
 
   ns.tprint("═══════════════════════════════════════════════");
   ns.tprint("  DAEMON v4.1 — Hybrid Hack + HWGW Batch");
@@ -58,6 +71,8 @@ export async function main(ns) {
 
   while (true) {
     var now = Date.now();
+    var rootedCount = 0;
+    try { rootedCount = JSON.parse(ns.read(DATA_DIR + "rooted.txt")).length; } catch(e) {}
 
     for (var m of MODULES) {
       if (!disabled.has(m.file)) {
@@ -65,29 +80,108 @@ export async function main(ns) {
         if (flag && flag.trim() === "true") {
           disabled.add(m.file);
           ns.tprint("DISABLED " + m.desc + " — missing required API");
+          if (m.file === "root.js") moduleStatus.root = { state: "disabled" };
+          if (m.file === "deploy.js") moduleStatus.deploy = { state: "disabled" };
+          if (m.file === "stocks.js") moduleStatus.stocks = { state: "disabled" };
+        }
+      }
+    }
+
+    if (!disabled.has("root.js") && bootState.rootReady) {
+      moduleStatus.root = { state: "ok" };
+    }
+    if (!disabled.has("deploy.js")) {
+      if (rootedCount === 0) moduleStatus.deploy = { state: "no-targets" };
+      else if (bootState.deployReady) moduleStatus.deploy = { state: "ok" };
+    }
+
+    var rootRam = ns.getScriptRam(MODULES_DIR + "root.js", "home");
+    var deployRam = ns.getScriptRam(MODULES_DIR + "deploy.js", "home");
+    var bootComplete = bootState.rootReady && bootState.deployReady;
+    var bootReserve = bootComplete ? 0 : (rootRam + deployRam + 1);
+
+    if (!bootComplete) {
+      if (!bootState.rootReady && now - liteLastRun["root-lite.js"] >= 8000) {
+        var rootLitePath = MODULES_DIR + "root-lite.js";
+        if (!ns.isRunning(rootLitePath, "home")) {
+          var rootLiteRam = ns.getScriptRam(rootLitePath, "home");
+          var rootLiteFree = ns.getServerMaxRam("home") - ns.getServerUsedRam("home");
+          if (rootLiteFree >= rootLiteRam) {
+            var rootLitePid = ns.exec(rootLitePath, "home", 1);
+            if (rootLitePid > 0) liteLastRun["root-lite.js"] = now;
+          } else {
+            moduleStatus.root = { state: "ram-blocked", freeRam: rootLiteFree, neededRam: rootLiteRam };
+          }
+        }
+      }
+      if (!bootState.deployReady && now - liteLastRun["deploy-lite.js"] >= 10000) {
+        if (rootedCount === 0) {
+          moduleStatus.deploy = { state: "no-targets" };
+        } else {
+          var deployLitePath = MODULES_DIR + "deploy-lite.js";
+          if (!ns.isRunning(deployLitePath, "home")) {
+            var deployLiteRam = ns.getScriptRam(deployLitePath, "home");
+            var deployLiteFree = ns.getServerMaxRam("home") - ns.getServerUsedRam("home");
+            if (deployLiteFree >= deployLiteRam) {
+              var deployLitePid = ns.exec(deployLitePath, "home", 1);
+              if (deployLitePid > 0) liteLastRun["deploy-lite.js"] = now;
+            } else {
+              moduleStatus.deploy = { state: "ram-blocked", freeRam: deployLiteFree, neededRam: deployLiteRam };
+            }
+          }
         }
       }
     }
 
     for (var i = 0; i < MODULES.length; i++) {
       var mod = MODULES[i];
+      var tracked = mod.file === "root.js" ? "root" : (mod.file === "deploy.js" ? "deploy" : (mod.file === "stocks.js" ? "stocks" : null));
       if (disabled.has(mod.file)) continue;
       if (now - lastRun[mod.file] < mod.interval) continue;
       var scriptPath = MODULES_DIR + mod.file;
-      if (ns.isRunning(scriptPath, "home")) continue;
+      if (ns.isRunning(scriptPath, "home")) {
+        if (tracked) moduleStatus[tracked] = { state: "running" };
+        continue;
+      }
       var scriptRam = ns.getScriptRam(scriptPath, "home");
       var freeRam = ns.getServerMaxRam("home") - ns.getServerUsedRam("home");
-      if (freeRam < scriptRam) continue;
+      if (mod.file === "deploy.js" && rootedCount === 0) {
+        moduleStatus.deploy = { state: "no-targets", freeRam: freeRam, neededRam: scriptRam };
+        lastRun[mod.file] = now;
+        continue;
+      }
+      if (!bootComplete && mod.file !== "root.js" && mod.file !== "deploy.js") {
+        if (freeRam - scriptRam < bootReserve) continue;
+      }
+      if (freeRam < scriptRam) {
+        if (tracked) moduleStatus[tracked] = { state: "ram-blocked", freeRam: freeRam, neededRam: scriptRam };
+        continue;
+      }
       var pid = ns.exec(scriptPath, "home", 1);
-      if (pid > 0) lastRun[mod.file] = now;
+      if (pid > 0) {
+        lastRun[mod.file] = now;
+        if (mod.file === "root.js") bootState.rootReady = true;
+        if (mod.file === "deploy.js") bootState.deployReady = true;
+        if (tracked) moduleStatus[tracked] = { state: "ok" };
+      } else if (tracked) {
+        moduleStatus[tracked] = { state: "exec-failed", freeRam: freeRam, neededRam: scriptRam };
+      }
     }
 
-    printStatus(ns, disabled);
+    await ns.write(DATA_DIR + "module_status.json", JSON.stringify({
+      timestamp: now,
+      boot: { rootReady: bootState.rootReady, deployReady: bootState.deployReady },
+      root: moduleStatus.root,
+      deploy: moduleStatus.deploy,
+      stocks: moduleStatus.stocks
+    }, null, 2), "w");
+
+    printStatus(ns, disabled, moduleStatus, bootState);
     await ns.sleep(5000);
   }
 }
 
-function printStatus(ns, disabled) {
+function printStatus(ns, disabled, moduleStatus, bootState) {
   ns.clearLog();
   ns.print("════════════════════════════════════════════");
   ns.print("      D A E M O N  v4.1 — Hybrid+HWGW     ");
@@ -104,6 +198,15 @@ function printStatus(ns, disabled) {
     for (var f of disabled) names.push(f.replace(".js", ""));
     ns.print(" Disabled   : " + names.join(", "));
   }
+  var rootState = moduleStatus && moduleStatus.root ? moduleStatus.root.state : "unknown";
+  var deployState = moduleStatus && moduleStatus.deploy ? moduleStatus.deploy.state : "unknown";
+  ns.print(" Root/Deploy: " + rootState + " / " + deployState);
+  var stocksState = "unknown";
+  try {
+    var rawStocks = ns.read("/data/stocks_status.txt");
+    if (rawStocks) stocksState = rawStocks.trim() || "unknown";
+  } catch(e) {}
+  ns.print(" Stocks     : " + stocksState);
   ns.print("────────────────────────────────────────────");
   // Count workers
   var rooted = [];
@@ -139,7 +242,18 @@ function printStatus(ns, disabled) {
     for (var t in batchTargets) ns.print("   HWGW " + t + ": " + batchTargets[t] + "t");
   }
   if (totalLoop === 0 && totalBatch === 0) {
-    ns.print(" Workers    : waiting for root module...");
+    var block = null;
+    if (moduleStatus && moduleStatus.root && moduleStatus.root.state === "ram-blocked") block = moduleStatus.root;
+    if (moduleStatus && moduleStatus.deploy && moduleStatus.deploy.state === "ram-blocked") block = moduleStatus.deploy;
+    if (block && typeof block.freeRam === "number" && typeof block.neededRam === "number") {
+      ns.print(" Workers    : RAM blocked (root/deploy) " + ns.formatRam(block.freeRam) + " free / " + ns.formatRam(block.neededRam) + " needed");
+    } else if (moduleStatus && moduleStatus.deploy && moduleStatus.deploy.state === "no-targets") {
+      ns.print(" Workers    : No rooted targets yet");
+    } else if (bootState && (!bootState.rootReady || !bootState.deployReady)) {
+      ns.print(" Workers    : Bootstrapping root/deploy");
+    } else {
+      ns.print(" Workers    : Idle (see module status)");
+    }
   }
   ns.print("════════════════════════════════════════════");
 }
@@ -198,6 +312,8 @@ function writeWorkerScripts(ns) {
 // ──────────────────── MODULE WRITERS ────────────────────────────────
 
 async function writeAllModules(ns) {
+  await writeRootLite(ns);
+  await writeDeployLite(ns);
   await writeRoot(ns);
   await writeDeploy(ns);
   await writeBatch(ns);
@@ -213,6 +329,84 @@ async function writeAllModules(ns) {
   await writeGang(ns);
   await writeSleeves(ns);
   await writeTravel(ns);
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// BOOTSTRAP LITE MODULES
+// ═══════════════════════════════════════════════════════════════════
+async function writeRootLite(ns) {
+  var code = [
+    "/** @param {NS} ns */",
+    "export async function main(ns) {",
+    "  var visited = new Set(['home']);",
+    "  var queue = ['home'];",
+    "  while (queue.length > 0) {",
+    "    var host = queue.shift();",
+    "    for (var n of ns.scan(host)) {",
+    "      if (!visited.has(n)) { visited.add(n); queue.push(n); }",
+    "    }",
+    "  }",
+    "  var pservs = ns.getPurchasedServers();",
+    "  var servers = [...visited].filter(function(s) { return s !== 'home' && pservs.indexOf(s) === -1; });",
+    "  await ns.write('/data/servers.txt', JSON.stringify(servers), 'w');",
+    "  var rooted = [];",
+    "  for (var host of servers) {",
+    "    if (!ns.serverExists(host)) continue;",
+    "    if (ns.hasRootAccess(host)) { rooted.push(host); continue; }",
+    "    if (ns.getServerRequiredHackingLevel(host) > ns.getHackingLevel()) continue;",
+    "    var ports = 0;",
+    "    if (ns.fileExists('BruteSSH.exe','home'))  { ns.brutessh(host);  ports++; }",
+    "    if (ns.fileExists('FTPCrack.exe','home'))  { ns.ftpcrack(host);  ports++; }",
+    "    if (ns.fileExists('relaySMTP.exe','home')) { ns.relaysmtp(host); ports++; }",
+    "    if (ns.fileExists('HTTPWorm.exe','home'))  { ns.httpworm(host);  ports++; }",
+    "    if (ns.fileExists('SQLInject.exe','home')) { ns.sqlinject(host); ports++; }",
+    "    if (ports >= ns.getServerNumPortsRequired(host)) {",
+    "      try { ns.nuke(host); } catch(e) {}",
+    "      if (ns.hasRootAccess(host)) rooted.push(host);",
+    "    }",
+    "  }",
+    "  await ns.write('/data/rooted.txt', JSON.stringify(rooted), 'w');",
+    "}"
+  ].join("\n");
+  await ns.write(MODULES_DIR + "root-lite.js", code, "w");
+}
+
+async function writeDeployLite(ns) {
+  var code = [
+    "/** @param {NS} ns */",
+    "export async function main(ns) {",
+    "  var rooted = [];",
+    "  try { rooted = JSON.parse(ns.read('/data/rooted.txt')); } catch(e) { return; }",
+    "  if (rooted.length === 0) return;",
+    "  var candidates = rooted.filter(function(h) {",
+    "    return ns.getServerMaxMoney(h) > 0 && ns.getServerRequiredHackingLevel(h) <= ns.getHackingLevel();",
+    "  });",
+    "  if (candidates.length === 0) return;",
+    "  candidates.sort(function(a, b) { return ns.getServerMaxMoney(b) - ns.getServerMaxMoney(a); });",
+    "  var target = candidates[0];",
+    "  await ns.write('/data/targets.txt', JSON.stringify([target]), 'w');",
+    "  var hasLoopWorker = ns.ps('home').some(function(p) {",
+    "    return p.filename === '/w-hack.js' || p.filename === '/w-grow.js' || p.filename === '/w-weak.js';",
+    "  });",
+    "  if (hasLoopWorker) return;",
+    "  var weakRam = ns.getScriptRam('/w-weak.js', 'home');",
+    "  var growRam = ns.getScriptRam('/w-grow.js', 'home');",
+    "  var hackRam = ns.getScriptRam('/w-hack.js', 'home');",
+    "  var reserve = Math.min(ns.getServerMaxRam('home') * 0.10, 4);",
+    "  var freeRam = ns.getServerMaxRam('home') - ns.getServerUsedRam('home') - reserve;",
+    "  if (freeRam < Math.min(weakRam, growRam, hackRam)) return;",
+    "  var bundleRam = weakRam + growRam + hackRam;",
+    "  var bundles = Math.floor(freeRam / bundleRam);",
+    "  if (bundles <= 0) {",
+    "    if (freeRam >= weakRam) ns.exec('/w-weak.js', 'home', 1, target);",
+    "    return;",
+    "  }",
+    "  ns.exec('/w-hack.js', 'home', bundles, target);",
+    "  ns.exec('/w-grow.js', 'home', bundles, target);",
+    "  ns.exec('/w-weak.js', 'home', bundles, target);",
+    "}"
+  ].join("\n");
+  await ns.write(MODULES_DIR + "deploy-lite.js", code, "w");
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -847,11 +1041,27 @@ async function writeStocks(ns) {
   var code = [
     "/** @param {NS} ns */",
     "export async function main(ns) {",
+    "  var statusFile = '/data/stocks_status.txt';",
+    "  if (!ns.stock || typeof ns.stock.hasTIXAPIAccess !== 'function' || typeof ns.stock.has4SDataTIXAPI !== 'function' || typeof ns.stock.getSymbols !== 'function') {",
+    "    await ns.write('/data/disabled_stocks.js', 'true', 'w');",
+    "    await ns.write(statusFile, 'api-missing', 'w');",
+    "    return;",
+    "  }",
+    "  if (!ns.stock.hasTIXAPIAccess()) {",
+    "    await ns.write(statusFile, 'waiting-tix', 'w');",
+    "    return;",
+    "  }",
+    "  if (!ns.stock.has4SDataTIXAPI()) {",
+    "    await ns.write(statusFile, 'waiting-4s', 'w');",
+    "    return;",
+    "  }",
     "  var symbols;",
-    "  try { symbols = ns.stock.getSymbols(); }",
-    "  catch(e) { await ns.write('/data/disabled_stocks.js', 'true', 'w'); return; }",
-    "  try { ns.stock.getForecast(symbols[0]); }",
-    "  catch(e) { await ns.write('/data/disabled_stocks.js', 'true', 'w'); return; }",
+    "  try { symbols = ns.stock.getSymbols(); } catch(e) {",
+    "    await ns.write('/data/disabled_stocks.js', 'true', 'w');",
+    "    await ns.write(statusFile, 'api-missing', 'w');",
+    "    return;",
+    "  }",
+    "  await ns.write(statusFile, 'ready', 'w');",
     "  var COMMISSION = 100000;",
     "  var totalMoney = ns.getServerMoneyAvailable('home');",
     "  if (totalMoney < 10000000) return;",
