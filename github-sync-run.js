@@ -97,7 +97,9 @@ async function resolve_file_list(ns, options) {
   }
 
   try {
-    const listed = await repository_listing(ns, options, "");
+    const listed = options.recursive
+      ? await repository_tree_listing(ns, options)
+      : await repository_listing(ns, options, "");
     return dedupe(listed);
   } catch (error) {
     ns.tprint(`WARNING: GitHub listing failed (${String(error)}). Falling back to local ls.`);
@@ -110,13 +112,25 @@ async function resolve_file_list(ns, options) {
   }
 }
 
+async function repository_tree_listing(ns, options) {
+  const branch_ref = encodeURIComponent(options.branch);
+  const url =
+    `https://api.github.com/repos/${options.owner}/${options.repo}/git/trees/${branch_ref}?recursive=1`;
+  const data = await fetch_json_via_wget(ns, url);
+  if (!Array.isArray(data?.tree)) {
+    throw new Error("Unexpected tree listing response");
+  }
+
+  return data.tree
+    .filter((entry) => entry && entry.type === "blob")
+    .map((entry) => normalize_repo_path(entry.path))
+    .filter((path) => should_include_file(path, options.extensions));
+}
+
 async function repository_listing(ns, options, folder) {
   const folder_path = normalize_repo_path(folder);
   const url = `https://api.github.com/repos/${options.owner}/${options.repo}/contents/${folder_path}?ref=${options.branch}`;
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-
-  const data = await response.json();
+  const data = await fetch_json_via_wget(ns, url);
   if (!Array.isArray(data)) {
     throw new Error("Unexpected listing response");
   }
@@ -142,6 +156,27 @@ async function repository_listing(ns, options, folder) {
   }
 
   return files;
+}
+
+async function fetch_json_via_wget(ns, url) {
+  const separator = url.includes("?") ? "&" : "?";
+  const temp_file = `tmp-github-sync-run-${Date.now()}-${Math.floor(Math.random() * 1e9)}.json`;
+  const ok = await ns.wget(`${url}${separator}ts=${Date.now()}`, temp_file);
+  if (!ok) {
+    throw new Error("wget failed");
+  }
+
+  const raw = ns.read(temp_file).trim();
+  ns.rm(temp_file, "home");
+  if (!raw) {
+    throw new Error("empty response");
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error("invalid JSON response");
+  }
 }
 
 async function sync_files(ns, options, files) {
