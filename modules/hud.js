@@ -31,6 +31,7 @@ const argsSchema = [
   ["refresh", 1000],
   ["show-lite", true],
   ["show-disabled", true],
+  ["target-rows", 3],
 ];
 
 /**
@@ -52,6 +53,7 @@ export async function main(ns) {
   const refresh_ms = Math.max(250, Number(flags.refresh) || 1000);
   const show_lite = Boolean(flags["show-lite"]);
   const show_disabled = Boolean(flags["show-disabled"]);
+  const target_rows = Math.max(1, Math.min(5, Number(flags["target-rows"]) || 3));
 
   const doc = eval("document");
   const hook0 = doc?.getElementById("overview-extra-hook-0");
@@ -77,6 +79,7 @@ export async function main(ns) {
     /** @type {ManagerStatus} */
     const manager_status = read_json(ns, MANAGER_STATUS_FILE, {});
     const metrics = read_metrics(ns);
+    const hwgw_live = collect_live_hwgw(ns);
 
     const rows = show_lite ? MODULE_ROWS.concat(LITE_ROWS) : MODULE_ROWS.slice();
     const module_map = module_status.modules || {};
@@ -91,6 +94,24 @@ export async function main(ns) {
     right.push(boot_ready ? "complete" : "bootstrap");
     left.push("Modules");
     right.push(`${enabled_count}/${rows.length} enabled`);
+    left.push("HWGW Live");
+    right.push(
+      `jobs ${hwgw_live.jobs} targets ${hwgw_live.targetCount} H${hwgw_live.hackThreads} G${hwgw_live.growThreads} W${hwgw_live.weakThreads}`
+    );
+
+    const top_targets = hwgw_live.targets.slice(0, target_rows);
+    if (top_targets.length === 0) {
+      left.push("Target 1");
+      right.push("none");
+    } else {
+      for (let i = 0; i < top_targets.length; i++) {
+        const target = top_targets[i];
+        left.push(`Target ${i + 1}`);
+        right.push(
+          `${short_host(target.hostname)} b${target.batches} h${target.hack} g${target.grow} w${target.weak}`
+        );
+      }
+    }
 
     for (const row of rows) {
       const state = module_map[row.file] || {};
@@ -237,4 +258,95 @@ function short_time(iso) {
   const d = new Date(iso);
   if (!Number.isFinite(d.getTime())) return "--:--:--";
   return d.toLocaleTimeString("en-US", { hour12: false });
+}
+
+/** @param {NS} ns */
+function collect_live_hwgw(ns) {
+  const hosts = read_hosts_for_hwgw(ns);
+  const targets = new Map();
+
+  let jobs = 0;
+  let hack_threads = 0;
+  let grow_threads = 0;
+  let weak_threads = 0;
+
+  for (const host of hosts) {
+    if (!ns.serverExists(host) || !ns.hasRootAccess(host)) continue;
+    for (const process of ns.ps(host)) {
+      const kind = hwgw_kind(process.filename);
+      if (!kind) continue;
+
+      jobs += 1;
+      const threads = to_num(process.threads);
+      if (kind === "hack") hack_threads += threads;
+      if (kind === "grow") grow_threads += threads;
+      if (kind === "weak") weak_threads += threads;
+
+      const hostname = process.args.length > 0 ? String(process.args[0]) : "unknown";
+      if (!targets.has(hostname)) {
+        targets.set(hostname, {
+          hostname,
+          hack: 0,
+          grow: 0,
+          weak: 0,
+          batches: new Set(),
+        });
+      }
+
+      const target = targets.get(hostname);
+      if (kind === "hack") target.hack += threads;
+      if (kind === "grow") target.grow += threads;
+      if (kind === "weak") target.weak += threads;
+
+      if (process.args.length > 2) {
+        target.batches.add(String(process.args[2]));
+      }
+    }
+  }
+
+  const target_rows = Array.from(targets.values())
+    .map((target) => ({
+      hostname: target.hostname,
+      hack: target.hack,
+      grow: target.grow,
+      weak: target.weak,
+      batches: target.batches.size,
+      totalThreads: target.hack + target.grow + target.weak,
+    }))
+    .sort((a, b) => b.totalThreads - a.totalThreads);
+
+  return {
+    jobs,
+    hackThreads: hack_threads,
+    growThreads: grow_threads,
+    weakThreads: weak_threads,
+    targetCount: target_rows.length,
+    targets: target_rows,
+  };
+}
+
+/** @param {NS} ns */
+function read_hosts_for_hwgw(ns) {
+  const hosts = new Set(["home"]);
+  const rooted = ns
+    .read(ROOTED_FILE)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  for (const host of rooted) hosts.add(host);
+  return [...hosts];
+}
+
+function hwgw_kind(filename) {
+  if (!filename) return "";
+  if (filename.endsWith("/b-hack.js") || filename === "b-hack.js") return "hack";
+  if (filename.endsWith("/b-grow.js") || filename === "b-grow.js") return "grow";
+  if (filename.endsWith("/b-weak.js") || filename === "b-weak.js") return "weak";
+  return "";
+}
+
+function short_host(hostname) {
+  if (!hostname) return "unknown";
+  if (hostname.length <= 16) return hostname;
+  return `${hostname.slice(0, 15)}~`;
 }
