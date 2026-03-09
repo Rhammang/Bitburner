@@ -20,6 +20,7 @@ const WARN_THROTTLE_MS = 60000;
 const CORE_MODULES = [
   { file: "root.js", desc: "Root Access Manager", interval: 5000, bootCritical: true },
   { file: "manager.js", desc: "Main Logic Controller", interval: 3000, bootCritical: true },
+  { file: "hud.js", desc: "Runtime HUD", interval: 10000, bootCritical: false },
   { file: "buy-servers.js", desc: "Server Purchase Manager", interval: 20000, bootCritical: false },
   { file: "contracts.js", desc: "Contract Solver", interval: 60000, bootCritical: false },
 ];
