@@ -7,6 +7,7 @@ const MANAGER_STATUS_FILE = "/data/manager_status.json";
 const WORKERS = {
   PREP_WEAK: "/w-weak.js",
   PREP_GROW: "/w-grow.js",
+  PREP_HACK: "/w-hack.js",
   HACK: "/b-hack.js",
   WEAK: "/b-weak.js",
   GROW: "/b-grow.js",
@@ -17,6 +18,8 @@ const WORKER_SOURCES = {
     "export async function main(ns) { while (true) { await ns.weaken(ns.args[0]); } }",
   [WORKERS.PREP_GROW]:
     "export async function main(ns) { while (true) { await ns.grow(ns.args[0]); } }",
+  [WORKERS.PREP_HACK]:
+    "export async function main(ns) { while (true) { await ns.hack(ns.args[0]); } }",
   [WORKERS.HACK]:
     "export async function main(ns) { if (ns.args[1] > 0) await ns.sleep(ns.args[1]); await ns.hack(ns.args[0]); }",
   [WORKERS.WEAK]:
@@ -29,6 +32,7 @@ const WORKER_SOURCES = {
 const RAM = {
   PREP_WEAK: 1.75,
   PREP_GROW: 1.75,
+  PREP_HACK: 1.7,
   HACK: 1.7,
   WEAK: 1.75,
   GROW: 1.75,
@@ -89,12 +93,14 @@ export async function main(ns) {
     const prep_targets = server_map.filter((s) => s.hasAdminRights && s.state === "PREP");
     const hack_targets = server_map.filter((s) => s.hasAdminRights && s.state === "HACK");
     const prep_target = prep_targets[0];
+    const prep_income_target = prep_target ? pick_prep_income_target(prep_target, hack_targets) : "";
 
     if (prep_target) {
-      await run_prep_workers(ns, prep_target, options.homeReserve);
+      await run_prep_workers(ns, prep_target, prep_income_target, options.homeReserve);
       await write_manager_status(ns, {
         mode: "PREP",
         prepTarget: prep_target.hostname,
+        prepIncomeTarget: prep_income_target,
         totalTargets: server_map.length,
         prepTargets: prep_targets.length,
         hackTargets: hack_targets.length,
@@ -207,7 +213,8 @@ function cleanup_schedule() {
   }
 }
 
-async function run_prep_workers(ns, target, home_reserve) {
+async function run_prep_workers(ns, target, income_target, home_reserve) {
+  const income_host = income_target || target.hostname;
   const processes = ns.ps("home");
   const grow_running = processes.some(
     (p) => p.filename === WORKERS.PREP_GROW && p.args[0] === target.hostname
@@ -215,10 +222,16 @@ async function run_prep_workers(ns, target, home_reserve) {
   const weak_running = processes.some(
     (p) => p.filename === WORKERS.PREP_WEAK && p.args[0] === target.hostname
   );
-  if (grow_running && weak_running) return;
+  const hack_running = processes.some(
+    (p) => p.filename === WORKERS.PREP_HACK && p.args[0] === income_host
+  );
+  if (grow_running && weak_running && hack_running) return;
 
   const any_prep_running = processes.some(
-    (p) => p.filename === WORKERS.PREP_GROW || p.filename === WORKERS.PREP_WEAK
+    (p) =>
+      p.filename === WORKERS.PREP_GROW ||
+      p.filename === WORKERS.PREP_WEAK ||
+      p.filename === WORKERS.PREP_HACK
   );
   if (any_prep_running) {
     stop_prep_workers(ns);
@@ -229,13 +242,27 @@ async function run_prep_workers(ns, target, home_reserve) {
     0,
     ns.getServerMaxRam("home") - ns.getServerUsedRam("home") - home_reserve
   );
-  if (available_ram < RAM.PREP_GROW) return;
+  if (available_ram < RAM.PREP_HACK) return;
 
-  const grow_threads = Math.floor(available_ram / (RAM.PREP_GROW + RAM.PREP_WEAK / 12));
-  const weak_threads = Math.max(1, Math.ceil(grow_threads / 12));
+  const max_hack_threads = Math.max(1, Math.floor(available_ram / RAM.PREP_HACK));
+  const hack_threads = clamp(Math.floor(max_hack_threads * 0.12), 1, 8);
+  const prep_ram = Math.max(0, available_ram - hack_threads * RAM.PREP_HACK);
+
+  let grow_threads = Math.floor(prep_ram / (RAM.PREP_GROW + RAM.PREP_WEAK / 12));
+  let weak_threads = Math.max(1, Math.ceil((grow_threads * 0.004 + hack_threads * 0.002) / 0.05));
+
+  while (
+    grow_threads > 0 &&
+    grow_threads * RAM.PREP_GROW + weak_threads * RAM.PREP_WEAK + hack_threads * RAM.PREP_HACK >
+      available_ram
+  ) {
+    grow_threads -= 1;
+    weak_threads = Math.max(1, Math.ceil((grow_threads * 0.004 + hack_threads * 0.002) / 0.05));
+  }
 
   if (grow_threads > 0) ns.exec(WORKERS.PREP_GROW, "home", grow_threads, target.hostname);
   if (weak_threads > 0) ns.exec(WORKERS.PREP_WEAK, "home", weak_threads, target.hostname);
+  if (hack_threads > 0) ns.exec(WORKERS.PREP_HACK, "home", hack_threads, income_host);
 }
 
 function ensure_local_worker_scripts(ns) {
@@ -277,6 +304,7 @@ function sync_workers_to_hosts(ns, hosts, now) {
 function stop_prep_workers(ns) {
   ns.kill(WORKERS.PREP_WEAK, "home");
   ns.kill(WORKERS.PREP_GROW, "home");
+  ns.kill(WORKERS.PREP_HACK, "home");
 }
 
 function launch_batches_for_target(ns, target, hosts, options) {
@@ -456,6 +484,13 @@ async function write_server_map_if_needed(ns, server_map, now) {
   last_server_map_payload = payload;
   last_server_map_write_ms = now;
   await ns.write(SERVER_MAP_FILE, JSON.stringify(server_map, null, 2), "w");
+}
+
+function pick_prep_income_target(prep_target, hack_targets) {
+  if (hack_targets.length > 0) {
+    return hack_targets[0].hostname;
+  }
+  return prep_target.hostname;
 }
 
 async function write_manager_status(ns, status, now = Date.now()) {

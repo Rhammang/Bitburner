@@ -38,7 +38,7 @@ const argsSchema = [
  * @typedef {{state?: string, pid?: number, freeRam?: number, neededRam?: number, bootReserve?: number}} RuntimeModuleState
  * @typedef {{rootReady?: boolean, managerReady?: boolean}} BootState
  * @typedef {{timestamp?: string, boot?: BootState, modules?: Record<string, RuntimeModuleState>}} DaemonStatus
- * @typedef {{mode?: string, prepTarget?: string, prepTargets?: number, hackTargets?: number, launchedBatches?: number, availableRam?: number, hostCount?: number, runnableHostCount?: number}} ManagerStatus
+ * @typedef {{mode?: string, prepTarget?: string, prepIncomeTarget?: string, prepTargets?: number, hackTargets?: number, launchedBatches?: number, availableRam?: number, hostCount?: number, runnableHostCount?: number}} ManagerStatus
  */
 
 export function autocomplete(data, args) {
@@ -102,7 +102,15 @@ export async function main(ns) {
     const top_targets = hwgw_live.targets.slice(0, target_rows);
     if (top_targets.length === 0) {
       left.push("Target 1");
-      right.push("none");
+      if (String(manager_status.mode || "") === "PREP" && manager_status.prepTarget) {
+        right.push(`prep ${short_host(String(manager_status.prepTarget))}`);
+        if (manager_status.prepIncomeTarget) {
+          left.push("Income");
+          right.push(short_host(String(manager_status.prepIncomeTarget)));
+        }
+      } else {
+        right.push("none");
+      }
     } else {
       for (let i = 0; i < top_targets.length; i++) {
         const target = top_targets[i];
