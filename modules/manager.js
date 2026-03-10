@@ -107,6 +107,7 @@ export async function main(ns) {
         launchedBatches: 0,
         scheduledTargets: Object.keys(batch_schedule).length,
         homeReserve: options.homeReserve,
+        prepDiag: last_prep_diag,
       }, cycle_start);
       await ns.sleep(options.prepSleepMs);
       continue;
@@ -213,27 +214,47 @@ function cleanup_schedule() {
   }
 }
 
+let last_prep_diag = {};
+
 async function run_prep_workers(ns, target, income_target, home_reserve) {
   const income_host = income_target || target.hostname;
   const processes = ns.ps("home");
-  const grow_running = processes.some(
+
+  const grow_proc = processes.find(
     (p) => p.filename === WORKERS.PREP_GROW && p.args[0] === target.hostname
   );
-  const weak_running = processes.some(
+  const weak_proc = processes.find(
     (p) => p.filename === WORKERS.PREP_WEAK && p.args[0] === target.hostname
   );
-  const hack_running = processes.some(
+  const hack_proc = processes.find(
     (p) => p.filename === WORKERS.PREP_HACK && p.args[0] === income_host
   );
-  if (grow_running && weak_running && hack_running) return;
 
-  const any_prep_running = processes.some(
+  if (grow_proc && weak_proc && hack_proc) {
+    last_prep_diag = {
+      state: "running",
+      target: target.hostname,
+      incomeTarget: income_host,
+      growThreads: grow_proc.threads,
+      weakThreads: weak_proc.threads,
+      hackThreads: hack_proc.threads,
+    };
+    return;
+  }
+
+  const stale_preps = processes.filter(
     (p) =>
       p.filename === WORKERS.PREP_GROW ||
       p.filename === WORKERS.PREP_WEAK ||
       p.filename === WORKERS.PREP_HACK
   );
-  if (any_prep_running) {
+  if (stale_preps.length > 0) {
+    last_prep_diag = {
+      state: "retargeting",
+      target: target.hostname,
+      incomeTarget: income_host,
+      staleWorkers: stale_preps.map((p) => `${p.filename}[${p.args[0]}]x${p.threads}`),
+    };
     stop_prep_workers(ns);
     await ns.sleep(50);
   }
@@ -242,7 +263,16 @@ async function run_prep_workers(ns, target, income_target, home_reserve) {
     0,
     ns.getServerMaxRam("home") - ns.getServerUsedRam("home") - home_reserve
   );
-  if (available_ram < RAM.PREP_HACK) return;
+  if (available_ram < RAM.PREP_HACK) {
+    last_prep_diag = {
+      state: "ram-blocked",
+      target: target.hostname,
+      availableRam: Math.floor(available_ram * 100) / 100,
+      neededRam: RAM.PREP_HACK,
+      homeReserve: home_reserve,
+    };
+    return;
+  }
 
   const max_hack_threads = Math.max(1, Math.floor(available_ram / RAM.PREP_HACK));
   const hack_threads = clamp(Math.floor(max_hack_threads * 0.12), 1, 8);
@@ -260,9 +290,26 @@ async function run_prep_workers(ns, target, income_target, home_reserve) {
     weak_threads = Math.max(1, Math.ceil((grow_threads * 0.004 + hack_threads * 0.002) / 0.05));
   }
 
-  if (grow_threads > 0) ns.exec(WORKERS.PREP_GROW, "home", grow_threads, target.hostname);
-  if (weak_threads > 0) ns.exec(WORKERS.PREP_WEAK, "home", weak_threads, target.hostname);
-  if (hack_threads > 0) ns.exec(WORKERS.PREP_HACK, "home", hack_threads, income_host);
+  const results = { grow: 0, weak: 0, hack: 0 };
+  if (grow_threads > 0) results.grow = ns.exec(WORKERS.PREP_GROW, "home", grow_threads, target.hostname);
+  if (weak_threads > 0) results.weak = ns.exec(WORKERS.PREP_WEAK, "home", weak_threads, target.hostname);
+  if (hack_threads > 0) results.hack = ns.exec(WORKERS.PREP_HACK, "home", hack_threads, income_host);
+
+  last_prep_diag = {
+    state: "launched",
+    target: target.hostname,
+    incomeTarget: income_host,
+    growThreads: grow_threads,
+    weakThreads: weak_threads,
+    hackThreads: hack_threads,
+    growPid: results.grow,
+    weakPid: results.weak,
+    hackPid: results.hack,
+    availableRam: Math.floor(available_ram * 100) / 100,
+    failed: (grow_threads > 0 && results.grow === 0) ||
+            (weak_threads > 0 && results.weak === 0) ||
+            (hack_threads > 0 && results.hack === 0),
+  };
 }
 
 function ensure_local_worker_scripts(ns) {
@@ -302,9 +349,12 @@ function sync_workers_to_hosts(ns, hosts, now) {
 }
 
 function stop_prep_workers(ns) {
-  ns.kill(WORKERS.PREP_WEAK, "home");
-  ns.kill(WORKERS.PREP_GROW, "home");
-  ns.kill(WORKERS.PREP_HACK, "home");
+  const prep_scripts = new Set([WORKERS.PREP_GROW, WORKERS.PREP_WEAK, WORKERS.PREP_HACK]);
+  for (const proc of ns.ps("home")) {
+    if (prep_scripts.has(proc.filename)) {
+      ns.kill(proc.pid);
+    }
+  }
 }
 
 function launch_batches_for_target(ns, target, hosts, options) {

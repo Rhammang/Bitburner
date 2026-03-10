@@ -80,6 +80,7 @@ export async function main(ns) {
     const manager_status = read_json(ns, MANAGER_STATUS_FILE, {});
     const metrics = read_metrics(ns);
     const hwgw_live = collect_live_hwgw(ns);
+    const prep_live = collect_live_prep(ns);
 
     const rows = show_lite ? MODULE_ROWS.concat(LITE_ROWS) : MODULE_ROWS.slice();
     const module_map = module_status.modules || {};
@@ -94,13 +95,21 @@ export async function main(ns) {
     right.push(boot_ready ? "complete" : "bootstrap");
     left.push("Modules");
     right.push(`${enabled_count}/${rows.length} enabled`);
-    left.push("HWGW Live");
+
+    if (prep_live.jobs > 0) {
+      left.push("Prep Live");
+      right.push(
+        `${short_host(prep_live.target)} H${prep_live.hackThreads} G${prep_live.growThreads} W${prep_live.weakThreads}`
+      );
+    }
+
+    left.push("Batch Live");
     right.push(
-      `jobs ${hwgw_live.jobs} targets ${hwgw_live.targetCount} H${hwgw_live.hackThreads} G${hwgw_live.growThreads} W${hwgw_live.weakThreads}`
+      `jobs ${hwgw_live.jobs} tgts ${hwgw_live.targetCount} H${hwgw_live.hackThreads} G${hwgw_live.growThreads} W${hwgw_live.weakThreads}`
     );
 
     const top_targets = hwgw_live.targets.slice(0, target_rows);
-    if (top_targets.length === 0) {
+    if (top_targets.length === 0 && prep_live.jobs === 0) {
       left.push("Target 1");
       if (String(manager_status.mode || "") === "PREP" && manager_status.prepTarget) {
         right.push(`prep ${short_host(String(manager_status.prepTarget))}`);
@@ -350,6 +359,36 @@ function hwgw_kind(filename) {
   if (filename.endsWith("/b-hack.js") || filename === "b-hack.js") return "hack";
   if (filename.endsWith("/b-grow.js") || filename === "b-grow.js") return "grow";
   if (filename.endsWith("/b-weak.js") || filename === "b-weak.js") return "weak";
+  return "";
+}
+
+/** @param {NS} ns */
+function collect_live_prep(ns) {
+  let jobs = 0;
+  let hack_threads = 0;
+  let grow_threads = 0;
+  let weak_threads = 0;
+  let target = "";
+
+  for (const process of ns.ps("home")) {
+    const kind = prep_kind(process.filename);
+    if (!kind) continue;
+    jobs += 1;
+    const threads = to_num(process.threads);
+    if (kind === "hack") hack_threads += threads;
+    if (kind === "grow") grow_threads += threads;
+    if (kind === "weak") weak_threads += threads;
+    if (!target && process.args.length > 0) target = String(process.args[0]);
+  }
+
+  return { jobs, hackThreads: hack_threads, growThreads: grow_threads, weakThreads: weak_threads, target };
+}
+
+function prep_kind(filename) {
+  if (!filename) return "";
+  if (filename.endsWith("/w-hack.js") || filename === "w-hack.js") return "hack";
+  if (filename.endsWith("/w-grow.js") || filename === "w-grow.js") return "grow";
+  if (filename.endsWith("/w-weak.js") || filename === "w-weak.js") return "weak";
   return "";
 }
 
