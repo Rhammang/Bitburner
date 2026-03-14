@@ -374,33 +374,34 @@ function calculate_batch_template(ns, target, options) {
 }
 
 function build_batch_jobs(template, target, landing_time, spacing_ms) {
+  const now = Date.now();
   return [
     {
       script: WORKERS.HACK,
       threads: template.hackThreads,
       ram: RAM.HACK,
-      delay: Math.max(0, landing_time - spacing_ms - template.hackTime),
+      delay: Math.max(0, landing_time - spacing_ms - template.hackTime - now),
       target,
     },
     {
       script: WORKERS.WEAK,
       threads: template.weak1Threads,
       ram: RAM.WEAK,
-      delay: Math.max(0, landing_time - template.weakenTime),
+      delay: Math.max(0, landing_time - template.weakenTime - now),
       target,
     },
     {
       script: WORKERS.GROW,
       threads: template.growThreads,
       ram: RAM.GROW,
-      delay: Math.max(0, landing_time + spacing_ms - template.growTime),
+      delay: Math.max(0, landing_time + spacing_ms - template.growTime - now),
       target,
     },
     {
       script: WORKERS.WEAK,
       threads: template.weak2Threads,
       ram: RAM.WEAK,
-      delay: Math.max(0, landing_time + spacing_ms * 2 - template.weakenTime),
+      delay: Math.max(0, landing_time + spacing_ms * 2 - template.weakenTime - now),
       target,
     },
   ];
