@@ -218,33 +218,66 @@ function cleanup_schedule() {
 
 async function run_prep_workers(ns, target, income_target, home_reserve) {
   const income_host = income_target || target.hostname;
-  const processes = ns.ps("home");
-  const grow_running = processes.some(
-    (p) => p.filename === WORKERS.PREP_GROW && p.args[0] === target.hostname
-  );
-  const weak_running = processes.some(
-    (p) => p.filename === WORKERS.PREP_WEAK && p.args[0] === target.hostname
-  );
-  const hack_running = processes.some(
-    (p) => p.filename === WORKERS.PREP_HACK && p.args[0] === income_host
-  );
-  if (grow_running && weak_running && hack_running) return;
+  const prep_hosts = get_prep_hosts(ns);
 
-  const any_prep_running = processes.some(
-    (p) =>
-      p.filename === WORKERS.PREP_GROW ||
-      p.filename === WORKERS.PREP_WEAK ||
-      p.filename === WORKERS.PREP_HACK
-  );
-  if (any_prep_running) {
-    stop_prep_workers(ns);
-    await ns.sleep(50);
+  // Sync worker scripts to purchased servers if missing
+  const scripts = Object.values(WORKERS);
+  for (const hostname of prep_hosts) {
+    if (hostname === "home") continue;
+    if (scripts.some((s) => !ns.fileExists(s, hostname))) {
+      try { ns.scp(scripts, hostname, "home"); } catch { /* ignore */ }
+    }
   }
 
-  const available_ram = Math.max(
-    0,
-    ns.getServerMaxRam("home") - ns.getServerUsedRam("home") - home_reserve
-  );
+  // Kill stale workers (targeting a different server) across all hosts
+  let killed_any = false;
+  for (const hostname of prep_hosts) {
+    for (const p of ns.ps(hostname)) {
+      if (!is_prep_script(p.filename)) continue;
+      if (p.args[0] === target.hostname || p.args[0] === income_host) continue;
+      ns.kill(p.pid);
+      killed_any = true;
+    }
+  }
+  if (killed_any) await ns.sleep(50);
+
+  // Launch workers on each host that is missing them
+  for (const hostname of prep_hosts) {
+    const procs = ns.ps(hostname);
+    const is_home = hostname === "home";
+    const has_grow = procs.some((p) => p.filename === WORKERS.PREP_GROW && p.args[0] === target.hostname);
+    const has_weak = procs.some((p) => p.filename === WORKERS.PREP_WEAK && p.args[0] === target.hostname);
+    const has_hack = is_home && procs.some((p) => p.filename === WORKERS.PREP_HACK && p.args[0] === income_host);
+
+    if (has_grow && has_weak && (!is_home || has_hack)) continue;
+
+    // Kill partial state before relaunching
+    procs.filter((p) => is_prep_script(p.filename)).forEach((p) => ns.kill(p.pid));
+
+    const available_ram = Math.max(
+      0,
+      ns.getServerMaxRam(hostname) - ns.getServerUsedRam(hostname) - (is_home ? home_reserve : 0)
+    );
+
+    if (is_home) {
+      launch_home_prep(ns, target.hostname, income_host, available_ram);
+    } else {
+      launch_remote_prep(ns, hostname, target.hostname, available_ram);
+    }
+  }
+}
+
+function get_prep_hosts(ns) {
+  return ["home", ...ns.getPurchasedServers()];
+}
+
+function is_prep_script(filename) {
+  return filename === WORKERS.PREP_GROW ||
+    filename === WORKERS.PREP_WEAK ||
+    filename === WORKERS.PREP_HACK;
+}
+
+function launch_home_prep(ns, target_host, income_host, available_ram) {
   if (available_ram < RAM.PREP_HACK) return;
 
   const max_hack_threads = Math.max(1, Math.floor(available_ram / RAM.PREP_HACK));
@@ -263,9 +296,28 @@ async function run_prep_workers(ns, target, income_target, home_reserve) {
     weak_threads = Math.max(1, Math.ceil((grow_threads * 0.004 + hack_threads * 0.002) / 0.05));
   }
 
-  if (grow_threads > 0) ns.exec(WORKERS.PREP_GROW, "home", grow_threads, target.hostname);
-  if (weak_threads > 0) ns.exec(WORKERS.PREP_WEAK, "home", weak_threads, target.hostname);
+  if (grow_threads > 0) ns.exec(WORKERS.PREP_GROW, "home", grow_threads, target_host);
+  if (weak_threads > 0) ns.exec(WORKERS.PREP_WEAK, "home", weak_threads, target_host);
   if (hack_threads > 0) ns.exec(WORKERS.PREP_HACK, "home", hack_threads, income_host);
+}
+
+function launch_remote_prep(ns, hostname, target_host, available_ram) {
+  if (available_ram < RAM.PREP_WEAK) return;
+
+  // Same grow/weak ratio as home (1 weak per 12 grow to offset security), no hack
+  let grow_threads = Math.floor(available_ram / (RAM.PREP_GROW + RAM.PREP_WEAK / 12));
+  let weak_threads = Math.max(1, Math.ceil(grow_threads * 0.004 / 0.05));
+
+  while (
+    grow_threads > 0 &&
+    grow_threads * RAM.PREP_GROW + weak_threads * RAM.PREP_WEAK > available_ram
+  ) {
+    grow_threads -= 1;
+    weak_threads = Math.max(1, Math.ceil(grow_threads * 0.004 / 0.05));
+  }
+
+  if (grow_threads > 0) ns.exec(WORKERS.PREP_GROW, hostname, grow_threads, target_host);
+  if (weak_threads > 0) ns.exec(WORKERS.PREP_WEAK, hostname, weak_threads, target_host);
 }
 
 function ensure_local_worker_scripts(ns) {
@@ -305,10 +357,11 @@ function sync_workers_to_hosts(ns, hosts, now) {
 }
 
 function stop_prep_workers(ns) {
-  const prep_scripts = new Set([WORKERS.PREP_GROW, WORKERS.PREP_WEAK, WORKERS.PREP_HACK]);
-  for (const proc of ns.ps("home")) {
-    if (prep_scripts.has(proc.filename)) {
-      ns.kill(proc.pid);
+  for (const hostname of get_prep_hosts(ns)) {
+    for (const proc of ns.ps(hostname)) {
+      if (is_prep_script(proc.filename)) {
+        ns.kill(proc.pid);
+      }
     }
   }
 }
