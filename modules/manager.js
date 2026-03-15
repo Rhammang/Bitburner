@@ -60,6 +60,7 @@ let last_server_map_payload = "";
 let last_server_map_write_ms = 0;
 let last_status_signature = "";
 let last_status_write_ms = 0;
+let cycle_failed_execs = 0;
 
 export function autocomplete(data, args) {
   data.flags(argsSchema);
@@ -124,6 +125,7 @@ export async function main(ns) {
     const runnable_hosts = hosts.filter((h) => h.ram >= MIN_EXEC_RAM);
     sync_workers_to_hosts(ns, runnable_hosts, cycle_start);
 
+    cycle_failed_execs = 0;
     let launched_batches = 0;
     for (const target of hack_targets) {
       launched_batches += launch_batches_for_target(ns, target, runnable_hosts, options);
@@ -141,6 +143,7 @@ export async function main(ns) {
       hostCount: hosts.length,
       runnableHostCount: runnable_hosts.length,
       availableRam: Math.floor(available_ram),
+      failedExecs: cycle_failed_execs,
     }, cycle_start);
 
     if (options.verbose) {
@@ -302,9 +305,12 @@ function sync_workers_to_hosts(ns, hosts, now) {
 }
 
 function stop_prep_workers(ns) {
-  ns.kill(WORKERS.PREP_WEAK, "home");
-  ns.kill(WORKERS.PREP_GROW, "home");
-  ns.kill(WORKERS.PREP_HACK, "home");
+  const prep_scripts = new Set([WORKERS.PREP_GROW, WORKERS.PREP_WEAK, WORKERS.PREP_HACK]);
+  for (const proc of ns.ps("home")) {
+    if (prep_scripts.has(proc.filename)) {
+      ns.kill(proc.pid);
+    }
+  }
 }
 
 function launch_batches_for_target(ns, target, hosts, options) {
@@ -324,7 +330,7 @@ function launch_batches_for_target(ns, target, hosts, options) {
     if (!plan) break;
 
     const launched_ok = execute_planned_jobs(ns, jobs, hosts, plan);
-    if (!launched_ok) break;
+    if (!launched_ok) { cycle_failed_execs += 1; break; }
 
     batch_schedule[target.hostname].push(
       landing_time - options.spacingMs,

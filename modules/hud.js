@@ -38,7 +38,7 @@ const argsSchema = [
  * @typedef {{state?: string, pid?: number, freeRam?: number, neededRam?: number, bootReserve?: number}} RuntimeModuleState
  * @typedef {{rootReady?: boolean, managerReady?: boolean}} BootState
  * @typedef {{timestamp?: string, boot?: BootState, modules?: Record<string, RuntimeModuleState>}} DaemonStatus
- * @typedef {{mode?: string, prepTarget?: string, prepIncomeTarget?: string, prepTargets?: number, hackTargets?: number, launchedBatches?: number, availableRam?: number, hostCount?: number, runnableHostCount?: number}} ManagerStatus
+ * @typedef {{mode?: string, prepTarget?: string, prepIncomeTarget?: string, prepTargets?: number, hackTargets?: number, launchedBatches?: number, scheduledTargets?: number, availableRam?: number, hostCount?: number, runnableHostCount?: number, failedExecs?: number, timestamp?: string}} ManagerStatus
  */
 
 export function autocomplete(data, args) {
@@ -80,47 +80,86 @@ export async function main(ns) {
     const manager_status = read_json(ns, MANAGER_STATUS_FILE, {});
     const metrics = read_metrics(ns);
     const hwgw_live = collect_live_hwgw(ns);
+    const prep_live = collect_live_prep(ns);
+    const ram = collect_ram_summary(ns);
 
     const rows = show_lite ? MODULE_ROWS.concat(LITE_ROWS) : MODULE_ROWS.slice();
     const module_map = module_status.modules || {};
     const enabled_count = rows.filter((row) => is_enabled(ns, row.file, module_map[row.file])).length;
     const boot_ready = Boolean(module_status.boot?.rootReady && module_status.boot?.managerReady);
+    const mode = String(manager_status.mode || "");
+    const mgr_age = manager_age_ms(manager_status.timestamp);
+    const mgr_stale = mgr_age > 10000;
 
     const left = [];
     const right = [];
+
+    // ── System header ─────────────────────────────────────────
     left.push("Daemon");
     right.push(short_time(module_status.timestamp));
+    left.push("Manager");
+    right.push(mgr_stale
+      ? `STALE ${Math.floor(mgr_age / 1000)}s!`
+      : `ok ${Math.floor(mgr_age / 1000)}s ago`);
     left.push("Boot");
     right.push(boot_ready ? "complete" : "bootstrap");
     left.push("Modules");
     right.push(`${enabled_count}/${rows.length} enabled`);
-    left.push("HWGW Live");
-    right.push(
-      `jobs ${hwgw_live.jobs} targets ${hwgw_live.targetCount} H${hwgw_live.hackThreads} G${hwgw_live.growThreads} W${hwgw_live.weakThreads}`
-    );
 
-    const top_targets = hwgw_live.targets.slice(0, target_rows);
-    if (top_targets.length === 0) {
-      left.push("Target 1");
-      if (String(manager_status.mode || "") === "PREP" && manager_status.prepTarget) {
-        right.push(`prep ${short_host(String(manager_status.prepTarget))}`);
-        if (manager_status.prepIncomeTarget) {
-          left.push("Income");
-          right.push(short_host(String(manager_status.prepIncomeTarget)));
-        }
-      } else {
-        right.push("none");
+    // ── Income + RAM ──────────────────────────────────────────
+    left.push("Income");
+    right.push(fmt_income(ns.getScriptIncome()[0]));
+    left.push("RAM");
+    right.push(`h:${ram.homeUsed.toFixed(0)}/${ram.homeMax.toFixed(0)}GB t:${fmt_ram(ram.totalUsed)}/${fmt_ram(ram.totalMax)}`);
+
+    // ── Mode-specific ─────────────────────────────────────────
+    if (mode === "PREP" && manager_status.prepTarget) {
+      const prep_host = String(manager_status.prepTarget);
+      let money_pct = "?";
+      let sec_delta = "?";
+      try {
+        const srv = ns.getServer(prep_host);
+        money_pct = srv.moneyMax > 0 ? Math.round((srv.moneyAvailable / srv.moneyMax) * 100) : 0;
+        sec_delta = (srv.hackDifficulty - srv.minDifficulty).toFixed(1);
+      } catch { /* server may not exist */ }
+      left.push("Prep");
+      right.push(`${short_host(prep_host)} $${money_pct}% +${sec_delta}sec`);
+
+      const income_src = manager_status.prepIncomeTarget;
+      if (income_src && income_src !== prep_host) {
+        left.push("Prep Src");
+        right.push(short_host(String(income_src)));
       }
-    } else {
+
+      left.push("Prep Work");
+      right.push(prep_live.jobs > 0
+        ? `G${prep_live.growThreads} W${prep_live.weakThreads} H${prep_live.hackThreads}`
+        : "none running");
+
+    } else if (mode === "HACK") {
+      const sched = to_num(manager_status.scheduledTargets);
+      left.push("Batch Live");
+      right.push(`j${hwgw_live.jobs} sc${sched} t${hwgw_live.targetCount} H${hwgw_live.hackThreads} G${hwgw_live.growThreads} W${hwgw_live.weakThreads}`);
+
+      const failed = to_num(manager_status.failedExecs);
+      if (failed > 0) {
+        left.push("Exec Fail");
+        right.push(`${failed} last cycle`);
+      }
+
+      const top_targets = hwgw_live.targets.slice(0, target_rows);
       for (let i = 0; i < top_targets.length; i++) {
-        const target = top_targets[i];
+        const t = top_targets[i];
         left.push(`Target ${i + 1}`);
-        right.push(
-          `${short_host(target.hostname)} b${target.batches} h${target.hack} g${target.grow} w${target.weak}`
-        );
+        right.push(`${short_host(t.hostname)} b${t.batches} H${t.hack} G${t.grow} W${t.weak}`);
       }
+
+    } else {
+      left.push("Mode");
+      right.push(mode || "waiting");
     }
 
+    // ── Module rows ───────────────────────────────────────────
     for (const row of rows) {
       const state = module_map[row.file] || {};
       const enabled = is_enabled(ns, row.file, state);
@@ -357,4 +396,80 @@ function short_host(hostname) {
   if (!hostname) return "unknown";
   if (hostname.length <= 16) return hostname;
   return `${hostname.slice(0, 15)}~`;
+}
+
+function manager_age_ms(timestamp) {
+  if (!timestamp) return Infinity;
+  const d = new Date(timestamp);
+  if (!Number.isFinite(d.getTime())) return Infinity;
+  return Math.max(0, Date.now() - d.getTime());
+}
+
+/** @param {NS} ns */
+function collect_ram_summary(ns) {
+  const homeMax = ns.getServerMaxRam("home");
+  const homeUsed = ns.getServerUsedRam("home");
+  let totalMax = homeMax;
+  let totalUsed = homeUsed;
+
+  for (const host of ns.getPurchasedServers()) {
+    totalMax += ns.getServerMaxRam(host);
+    totalUsed += ns.getServerUsedRam(host);
+  }
+
+  const rooted = ns.read(ROOTED_FILE).split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  for (const host of rooted) {
+    if (!ns.serverExists(host) || !ns.hasRootAccess(host)) continue;
+    totalMax += ns.getServerMaxRam(host);
+    totalUsed += ns.getServerUsedRam(host);
+  }
+
+  return { homeMax, homeUsed, totalMax, totalUsed };
+}
+
+/** @param {NS} ns */
+function collect_live_prep(ns) {
+  let jobs = 0;
+  let hack_threads = 0;
+  let grow_threads = 0;
+  let weak_threads = 0;
+  let target = "";
+
+  for (const process of ns.ps("home")) {
+    const kind = prep_kind(process.filename);
+    if (!kind) continue;
+    jobs += 1;
+    const threads = to_num(process.threads);
+    if (kind === "hack") hack_threads += threads;
+    if (kind === "grow") grow_threads += threads;
+    if (kind === "weak") weak_threads += threads;
+    if (!target && process.args.length > 0) target = String(process.args[0]);
+  }
+
+  return { jobs, hackThreads: hack_threads, growThreads: grow_threads, weakThreads: weak_threads, target };
+}
+
+function prep_kind(filename) {
+  if (!filename) return "";
+  if (filename.endsWith("/w-hack.js") || filename === "w-hack.js") return "hack";
+  if (filename.endsWith("/w-grow.js") || filename === "w-grow.js") return "grow";
+  if (filename.endsWith("/w-weak.js") || filename === "w-weak.js") return "weak";
+  return "";
+}
+
+function fmt_income(per_sec) {
+  const val = Number(per_sec);
+  if (!Number.isFinite(val) || val <= 0) return "$0/s";
+  if (val >= 1e12) return `$${(val / 1e12).toFixed(2)}t/s`;
+  if (val >= 1e9) return `$${(val / 1e9).toFixed(2)}b/s`;
+  if (val >= 1e6) return `$${(val / 1e6).toFixed(2)}m/s`;
+  if (val >= 1e3) return `$${(val / 1e3).toFixed(1)}k/s`;
+  return `$${val.toFixed(0)}/s`;
+}
+
+function fmt_ram(gb) {
+  const val = Number(gb);
+  if (!Number.isFinite(val)) return "0GB";
+  if (val >= 1024) return `${(val / 1024).toFixed(1)}TB`;
+  return `${val.toFixed(0)}GB`;
 }
