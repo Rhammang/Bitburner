@@ -94,7 +94,7 @@ export async function main(ns) {
     const prep_targets = server_map.filter((s) => s.hasAdminRights && s.state === "PREP");
     const hack_targets = server_map.filter((s) => s.hasAdminRights && s.state === "HACK");
     const prep_target = prep_targets[0];
-    const prep_income_target = prep_target ? pick_prep_income_target(prep_target, hack_targets) : "";
+    const prep_income_target = prep_target ? pick_prep_income_target(ns, hack_targets) : "";
 
     if (prep_target) {
       await run_prep_workers(ns, prep_target, prep_income_target, options.homeReserve);
@@ -229,12 +229,14 @@ async function run_prep_workers(ns, target, income_target, home_reserve) {
     }
   }
 
-  // Kill stale workers (targeting a different server) across all hosts
+  // Kill misaligned workers: grow/weak must target prep host, hack must target income host
   let killed_any = false;
   for (const hostname of prep_hosts) {
     for (const p of ns.ps(hostname)) {
       if (!is_prep_script(p.filename)) continue;
-      if (p.args[0] === target.hostname || p.args[0] === income_host) continue;
+      const is_hack = p.filename === WORKERS.PREP_HACK;
+      const correct_target = is_hack ? income_host : target.hostname;
+      if (p.args[0] === correct_target) continue;
       ns.kill(p.pid);
       killed_any = true;
     }
@@ -253,6 +255,7 @@ async function run_prep_workers(ns, target, income_target, home_reserve) {
 
     // Kill partial state before relaunching
     procs.filter((p) => is_prep_script(p.filename)).forEach((p) => ns.kill(p.pid));
+    await ns.sleep(50);
 
     const available_ram = Math.max(
       0,
@@ -546,11 +549,20 @@ async function write_server_map_if_needed(ns, server_map, now) {
   await ns.write(SERVER_MAP_FILE, JSON.stringify(server_map, null, 2), "w");
 }
 
-function pick_prep_income_target(prep_target, hack_targets) {
-  if (hack_targets.length > 0) {
-    return hack_targets[0].hostname;
+function pick_prep_income_target(ns, hack_targets) {
+  // Pick a stable income target — skip servers close to dropping out of HACK state
+  // to avoid oscillation where the prep hack worker drains the income target back to PREP
+  for (const t of hack_targets) {
+    try {
+      const srv = ns.getServer(t.hostname);
+      const money_ratio = srv.moneyMax > 0 ? srv.moneyAvailable / srv.moneyMax : 0;
+      // Only use as income target if well above the 99% HACK threshold
+      if (money_ratio < 0.995) continue;
+    } catch { continue; }
+    return t.hostname;
   }
-  return prep_target.hostname;
+  // Fall back to prep target itself (hack worker will drain what we're growing, but no oscillation)
+  return "";
 }
 
 async function write_manager_status(ns, status, now = Date.now()) {
