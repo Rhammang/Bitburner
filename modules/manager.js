@@ -61,6 +61,7 @@ let last_server_map_write_ms = 0;
 let last_status_signature = "";
 let last_status_write_ms = 0;
 let cycle_failed_execs = 0;
+let cached_income_target = ""; // stable income target across cycles (prevents oscillation)
 
 export function autocomplete(data, args) {
   data.flags(argsSchema);
@@ -241,7 +242,7 @@ async function run_prep_workers(ns, target, income_target, home_reserve) {
       killed_any = true;
     }
   }
-  if (killed_any) await ns.sleep(50);
+  if (killed_any) await ns.sleep(200);
 
   // Launch workers on each host that is missing them
   for (const hostname of prep_hosts) {
@@ -250,8 +251,14 @@ async function run_prep_workers(ns, target, income_target, home_reserve) {
     const has_grow = procs.some((p) => p.filename === WORKERS.PREP_GROW && p.args[0] === target.hostname);
     const has_weak = procs.some((p) => p.filename === WORKERS.PREP_WEAK && p.args[0] === target.hostname);
     const has_hack = is_home && procs.some((p) => p.filename === WORKERS.PREP_HACK && p.args[0] === income_host);
+    // Also check for stale workers targeting wrong hosts (can linger if kill took > 200ms to propagate)
+    const has_wrong = procs.some((p) => {
+      if (!is_prep_script(p.filename)) return false;
+      const expect = p.filename === WORKERS.PREP_HACK ? income_host : target.hostname;
+      return p.args[0] !== expect;
+    });
 
-    if (has_grow && has_weak && (!is_home || has_hack)) continue;
+    if (has_grow && has_weak && (!is_home || has_hack) && !has_wrong) continue;
 
     // Kill partial state before relaunching
     procs.filter((p) => is_prep_script(p.filename)).forEach((p) => ns.kill(p.pid));
@@ -550,15 +557,28 @@ async function write_server_map_if_needed(ns, server_map, now) {
 }
 
 function pick_prep_income_target(ns, hack_targets) {
-  // Pick a stable income target — skip servers close to dropping out of HACK state
-  // to avoid oscillation where the prep hack worker drains the income target back to PREP
+  // Prefer to keep the current target stable — only evict it if it drops out of HACK state
+  // entirely or falls below 95% money. This prevents per-cycle oscillation when money
+  // fluctuates near the 99% HACK threshold.
+  if (cached_income_target) {
+    const still_hack = hack_targets.some((t) => t.hostname === cached_income_target);
+    if (still_hack) {
+      try {
+        const srv = ns.getServer(cached_income_target);
+        const money_ratio = srv.moneyMax > 0 ? srv.moneyAvailable / srv.moneyMax : 0;
+        if (money_ratio >= 0.95) return cached_income_target;
+      } catch { /* fall through */ }
+    }
+    cached_income_target = "";
+  }
+
   for (const t of hack_targets) {
     try {
       const srv = ns.getServer(t.hostname);
       const money_ratio = srv.moneyMax > 0 ? srv.moneyAvailable / srv.moneyMax : 0;
-      // Only use as income target if well above the 99% HACK threshold
       if (money_ratio < 0.995) continue;
     } catch { continue; }
+    cached_income_target = t.hostname;
     return t.hostname;
   }
   // Fall back to prep target itself (hack worker will drain what we're growing, but no oscillation)

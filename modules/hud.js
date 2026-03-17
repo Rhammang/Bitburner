@@ -262,6 +262,7 @@ function short_state(state, enabled) {
   if (state === "exec-failed") return "[fail]";
   if (state === "missing") return "[miss]";
   if (state === "disabled") return "[off]";
+  if (state === "standby") return "[off]";
   return `[${state}]`;
 }
 

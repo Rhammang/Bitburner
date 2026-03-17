@@ -60,6 +60,12 @@ export async function main(ns) {
 
     if (!boot_complete) {
       run_lite_boot_modules(ns, now, last_lite_run, last_warn, status, boot);
+    } else {
+      for (const lite of LITE_BOOT_MODULES) {
+        if (status[lite.file]?.state !== "standby") {
+          status[lite.file] = { state: "standby" };
+        }
+      }
     }
 
     for (const mod of CORE_MODULES) {
