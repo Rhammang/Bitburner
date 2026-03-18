@@ -298,12 +298,14 @@ function target_needs_grow(ns, hostname) {
 }
 
 function launch_income_workers(ns, hostname, income_host, available_ram) {
-  // Sustainable loop hacking: ~5% hack, ~80% grow (sustain money), ~15% weaken (offset security)
+  // Sustainable loop hacking: ~1% hack, ~87% grow (sustain money), ~12% weaken (offset security)
+  // Hack runs 4x faster than weaken and 3x faster than grow, so a small hack allocation
+  // produces disproportionate drain — keep it minimal to prevent depleting the income target.
   const min_income_ram = RAM.PREP_HACK + RAM.PREP_GROW + RAM.PREP_WEAK;
   if (available_ram < min_income_ram) return;
 
-  const hack_threads = Math.max(1, Math.floor((available_ram * 0.05) / RAM.PREP_HACK));
-  const weak_threads = Math.max(1, Math.floor((available_ram * 0.15) / RAM.PREP_WEAK));
+  const hack_threads = Math.max(1, Math.floor((available_ram * 0.01) / RAM.PREP_HACK));
+  const weak_threads = Math.max(1, Math.floor((available_ram * 0.12) / RAM.PREP_WEAK));
   const remaining_ram = available_ram - hack_threads * RAM.PREP_HACK - weak_threads * RAM.PREP_WEAK;
   const grow_threads = Math.max(1, Math.floor(remaining_ram / RAM.PREP_GROW));
 
