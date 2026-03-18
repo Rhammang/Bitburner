@@ -8,17 +8,22 @@
  * @param {NS} ns
  */
 
-const MODULE_STATUS_FILE = "/data/module_status.json";
-const MANAGER_STATUS_FILE = "/data/manager_status.json";
-const SERVER_MAP_FILE = "/data/server_map.json";
-const ROOTED_FILE = "/data/rooted.txt";
-const TARGETS_FILE = "/data/targets.txt";
-const PREPPED_FILE = "/data/prepped.txt";
+import {
+  BATCH_WORKER_FILES,
+  CONTRACTS_STATUS_FILE,
+  MANAGER_STATUS_FILE,
+  MODULE_STATUS_FILE,
+  PREPPED_FILE,
+  PREP_WORKER_FILES,
+  ROOTED_FILE,
+  SERVER_MAP_FILE,
+  TARGETS_FILE,
+  WORKER_FILES,
+} from "/modules/runtime-contracts.js";
 
-const PREP_SCRIPTS = new Set(["/w-hack.js", "/w-grow.js", "/w-weak.js",
-                               "w-hack.js", "w-grow.js", "w-weak.js"]);
-const BATCH_SCRIPTS = new Set(["/b-hack.js", "/b-grow.js", "/b-weak.js",
-                                "b-hack.js", "b-grow.js", "b-weak.js"]);
+const CONTRACTS_FILE = CONTRACTS_STATUS_FILE;
+const PREP_SCRIPTS = new Set(PREP_WORKER_FILES);
+const BATCH_SCRIPTS = new Set(BATCH_WORKER_FILES);
 
 export function autocomplete() {
   return ["--tail"];
@@ -30,7 +35,7 @@ export async function main(ns) {
   const sep = "═".repeat(60);
   const thin = "─".repeat(60);
 
-  ns.tprint(`\n${sep}`);
+  ns.tprint(`${sep}`);
   ns.tprint("  BITBURNER DIAGNOSTICS SNAPSHOT");
   ns.tprint(`  ${new Date().toISOString()}`);
   ns.tprint(sep);
@@ -56,7 +61,7 @@ export async function main(ns) {
   }
 
   // ── 2. Manager Status ─────────────────────────────────────
-  ns.tprint(`\n${thin}`);
+  ns.tprint(`${thin}`);
   ns.tprint("▸ MANAGER STATUS");
   const mgr = read_json(ns, MANAGER_STATUS_FILE, null);
   if (!mgr) {
@@ -89,7 +94,7 @@ export async function main(ns) {
   }
 
   // ── 3. Live Processes ──────────────────────────────────────
-  ns.tprint(`\n${thin}`);
+  ns.tprint(`${thin}`);
   ns.tprint("▸ LIVE WORKER PROCESSES (home)");
   const home_procs = ns.ps("home");
   const prep_procs = home_procs.filter((p) => PREP_SCRIPTS.has(p.filename));
@@ -115,7 +120,7 @@ export async function main(ns) {
   }
 
   // ── 4. Distributed Workers ────────────────────────────────
-  ns.tprint(`\n${thin}`);
+  ns.tprint(`${thin}`);
   ns.tprint("▸ DISTRIBUTED BATCH WORKERS");
   const rooted = read_lines(ns, ROOTED_FILE);
   let total_batch_jobs = 0;
@@ -146,7 +151,7 @@ export async function main(ns) {
   }
 
   // ── 5. RAM Analysis ───────────────────────────────────────
-  ns.tprint(`\n${thin}`);
+  ns.tprint(`${thin}`);
   ns.tprint("▸ RAM ANALYSIS");
   const home_max = ns.getServerMaxRam("home");
   const home_used = ns.getServerUsedRam("home");
@@ -165,7 +170,7 @@ export async function main(ns) {
   }
 
   // ── 6. Server Map / Target Analysis ───────────────────────
-  ns.tprint(`\n${thin}`);
+  ns.tprint(`${thin}`);
   ns.tprint("▸ TARGET ANALYSIS");
   const server_map = read_json(ns, SERVER_MAP_FILE, []);
   if (server_map.length === 0) {
@@ -191,7 +196,7 @@ export async function main(ns) {
   }
 
   // ── 7. Data File Health ───────────────────────────────────
-  ns.tprint(`\n${thin}`);
+  ns.tprint(`${thin}`);
   ns.tprint("▸ DATA FILES");
   const data_files = [
     MODULE_STATUS_FILE,
@@ -200,6 +205,7 @@ export async function main(ns) {
     ROOTED_FILE,
     TARGETS_FILE,
     PREPPED_FILE,
+    CONTRACTS_FILE,
   ];
   for (const f of data_files) {
     const exists = ns.fileExists(f, "home");
@@ -209,17 +215,17 @@ export async function main(ns) {
   }
 
   // ── 8. Worker Script Check ────────────────────────────────
-  ns.tprint(`\n${thin}`);
+  ns.tprint(`${thin}`);
   ns.tprint("▸ WORKER SCRIPTS ON DISK");
-  const worker_scripts = ["/w-hack.js", "/w-grow.js", "/w-weak.js", "/b-hack.js", "/b-grow.js", "/b-weak.js"];
+  const worker_scripts = WORKER_FILES;
   for (const ws of worker_scripts) {
     const exists = ns.fileExists(ws, "home");
     ns.tprint(`  ${pad(ws, 16)} ${exists ? "✓ present" : "✗ MISSING"}`);
   }
 
-  ns.tprint(`\n${sep}`);
+  ns.tprint(`${sep}`);
   ns.tprint("  END DIAGNOSTICS");
-  ns.tprint(`${sep}\n`);
+  ns.tprint(`${sep}`);
 }
 
 function read_json(ns, path, fallback) {

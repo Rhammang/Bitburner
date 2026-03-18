@@ -1,7 +1,19 @@
 import { list_servers } from "/modules/utils.js";
+import {
+  DEPLOY_LITE_WORKER_FILE,
+  DEPLOY_LITE_WORKER_RAM,
+  DEPLOY_LITE_WORKER_SOURCE,
+  DEPLOY_LITE_WORKER_SYNC_INTERVAL_MS,
+  ROOTED_FILE,
+  ROOT_LITE_LOOP_MS,
+  ROOT_MODULE_FILE,
+} from "/modules/runtime-contracts.js";
 
-const ROOTED_FILE = "/data/rooted.txt";
-const LOOP_MS = 4000;
+const WORKER_FILE = DEPLOY_LITE_WORKER_FILE;
+const WORKER_SOURCE = DEPLOY_LITE_WORKER_SOURCE;
+const LOOP_MS = ROOT_LITE_LOOP_MS;
+const WORKER_RAM = DEPLOY_LITE_WORKER_RAM;
+const WORKER_SYNC_INTERVAL_MS = DEPLOY_LITE_WORKER_SYNC_INTERVAL_MS;
 let last_rooted_payload = "";
 
 const PORT_OPENERS = [
@@ -17,7 +29,7 @@ export async function main(ns) {
   ns.disableLog("ALL");
 
   while (true) {
-    if (ns.isRunning("/modules/root.js", "home")) return;
+    if (ns.isRunning(ROOT_MODULE_FILE, "home")) return;
 
     const all_servers = list_servers(ns);
     let rooted_this_pass = 0;

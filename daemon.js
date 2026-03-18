@@ -9,26 +9,22 @@
  *  ═══════════════════════════════════════════════════════════════════
  */
 
-const MODULES_DIR = "/modules/";
-const DATA_DIR = "/data/";
-const MODULE_STATUS_FILE = DATA_DIR + "module_status.json";
-const DISABLED_PREFIX = DATA_DIR + "disabled_";
-const LOOP_MS = 5000;
-const WARN_THROTTLE_MS = 60000;
+import {
+  CORE_MODULES,
+  DAEMON_LOOP_MS,
+  DAEMON_WARN_THROTTLE_MS,
+  DISABLED_PREFIX,
+  LITE_BOOT_MODULES,
+  MANAGER_MODULE_FILE,
+  MODULE_FILES,
+  MODULES_DIR,
+  MODULE_STATUS_FILE,
+  ROOT_MODULE_FILE,
+  WORKER_SOURCES,
+} from "/modules/runtime-contracts.js";
 
-// A lean list of core modules. The manager will handle hack-related scripts.
-const CORE_MODULES = [
-  { file: "root.js", desc: "Root Access Manager", interval: 5000, bootCritical: true },
-  { file: "manager.js", desc: "Main Logic Controller", interval: 3000, bootCritical: true },
-  { file: "hud.js", desc: "Runtime HUD", interval: 10000, bootCritical: false },
-  { file: "buy-servers.js", desc: "Server Purchase Manager", interval: 20000, bootCritical: false },
-  { file: "contracts.js", desc: "Contract Solver", interval: 60000, bootCritical: false },
-];
-
-const LITE_BOOT_MODULES = [
-  { file: "root-lite.js", desc: "Root Bootstrap", interval: 8000, protects: "root.js" },
-  { file: "deploy-lite.js", desc: "Deploy Bootstrap", interval: 10000, protects: "manager.js" },
-];
+const LOOP_MS = DAEMON_LOOP_MS;
+const WARN_THROTTLE_MS = DAEMON_WARN_THROTTLE_MS;
 
 /** @param {NS} ns */
 export async function main(ns) {
@@ -119,11 +115,11 @@ export async function main(ns) {
 
         const pid = ns.exec(scriptPath, "home", 1);
         if (pid > 0) {
-          ns.tprint(`SUCCESS: Launched ${mod.desc} (${mod.file})`);
-          status[mod.file] = { state: "ok", pid };
+        ns.tprint(`SUCCESS: Launched ${mod.desc} (${mod.file})`);
+        status[mod.file] = { state: "ok", pid };
 
-          if (mod.file === "root.js") boot.rootReady = true;
-          if (mod.file === "manager.js") boot.managerReady = true;
+          if (mod.file === MODULE_FILES.ROOT) boot.rootReady = true;
+          if (mod.file === MODULE_FILES.MANAGER) boot.managerReady = true;
         } else {
           warn_throttled(
             ns,
@@ -137,8 +133,8 @@ export async function main(ns) {
       } else {
         status[mod.file] = { state: "running" };
 
-        if (mod.file === "root.js") boot.rootReady = true;
-        if (mod.file === "manager.js") boot.managerReady = true;
+        if (mod.file === MODULE_FILES.ROOT) boot.rootReady = true;
+        if (mod.file === MODULE_FILES.MANAGER) boot.managerReady = true;
       }
     }
 
@@ -166,15 +162,9 @@ export async function main(ns) {
  * @param {NS} ns
  */
 function writeWorkerScripts(ns) {
-  // Loop workers for prepping
-  ns.write("/w-weak.js", "export async function main(ns) { while (true) { await ns.weaken(ns.args[0]); } }", "w");
-  ns.write("/w-grow.js", "export async function main(ns) { while (true) { await ns.grow(ns.args[0]); } }", "w");
-  ns.write("/w-hack.js", "export async function main(ns) { while (true) { await ns.hack(ns.args[0]); } }", "w");
-
-  // Batch workers (one-shot)
-  ns.write("/b-hack.js", "export async function main(ns) { if (ns.args[1] > 0) await ns.sleep(ns.args[1]); await ns.hack(ns.args[0]); }", "w");
-  ns.write("/b-grow.js", "export async function main(ns) { if (ns.args[1] > 0) await ns.sleep(ns.args[1]); await ns.grow(ns.args[0]); }", "w");
-  ns.write("/b-weak.js", "export async function main(ns) { if (ns.args[1] > 0) await ns.sleep(ns.args[1]); await ns.weaken(ns.args[0]); }", "w");
+  for (const [script, source] of Object.entries(WORKER_SOURCES)) {
+    ns.write(script, source, "w");
+  }
 }
 
 function clear_disabled_flags(ns) {
@@ -185,19 +175,19 @@ function clear_disabled_flags(ns) {
 
 function get_boot_reserve(ns, boot) {
   let reserve = 1;
-  if (!boot.rootReady && ns.fileExists(MODULES_DIR + "root.js", "home")) {
-    reserve += ns.getScriptRam(MODULES_DIR + "root.js", "home");
+  if (!boot.rootReady && ns.fileExists(ROOT_MODULE_FILE, "home")) {
+    reserve += ns.getScriptRam(ROOT_MODULE_FILE, "home");
   }
-  if (!boot.managerReady && ns.fileExists(MODULES_DIR + "manager.js", "home")) {
-    reserve += ns.getScriptRam(MODULES_DIR + "manager.js", "home");
+  if (!boot.managerReady && ns.fileExists(MANAGER_MODULE_FILE, "home")) {
+    reserve += ns.getScriptRam(MANAGER_MODULE_FILE, "home");
   }
   return reserve;
 }
 
 function run_lite_boot_modules(ns, now, last_lite_run, last_warn, status, boot) {
   for (const lite of LITE_BOOT_MODULES) {
-    const protecting_root = lite.protects === "root.js";
-    const protecting_manager = lite.protects === "manager.js";
+    const protecting_root = lite.protects === MODULE_FILES.ROOT;
+    const protecting_manager = lite.protects === MODULE_FILES.MANAGER;
 
     if (protecting_root && boot.rootReady) continue;
     if (protecting_manager && boot.managerReady) continue;

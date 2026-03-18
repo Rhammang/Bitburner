@@ -1,7 +1,14 @@
-const LOOP_MS = 30000;
-const SERVER_PREFIX = "pserv-";
-const MIN_RAM = 8;
-const BUDGET_FRACTION = 0.25;
+import {
+  BUY_SERVERS_BUDGET_FRACTION,
+  BUY_SERVERS_LOOP_MS,
+  BUY_SERVERS_MIN_RAM,
+  BUY_SERVERS_SERVER_PREFIX,
+} from "/modules/runtime-contracts.js";
+
+const LOOP_MS = BUY_SERVERS_LOOP_MS;
+const SERVER_PREFIX = BUY_SERVERS_SERVER_PREFIX;
+const MIN_RAM = BUY_SERVERS_MIN_RAM;
+const BUDGET_FRACTION = BUY_SERVERS_BUDGET_FRACTION;
 
 /** @param {NS} ns */
 export async function main(ns) {

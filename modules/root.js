@@ -1,10 +1,13 @@
 import { list_servers } from "/modules/utils.js";
+import {
+  PREPPED_FILE,
+  ROOT_LOOP_MS,
+  ROOTED_FILE,
+  SERVERS_FILE,
+  TARGETS_FILE,
+} from "/modules/runtime-contracts.js";
 
-const SERVERS_FILE = "/data/servers.txt";
-const ROOTED_FILE = "/data/rooted.txt";
-const TARGETS_FILE = "/data/targets.txt";
-const PREPPED_FILE = "/data/prepped.txt";
-const LOOP_MS = 5000;
+const LOOP_MS = ROOT_LOOP_MS;
 let last_outputs = {
   servers: "",
   rooted: "",

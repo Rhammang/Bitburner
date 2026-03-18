@@ -5,27 +5,22 @@
  * @param {NS} ns
  */
 
-const MODULE_STATUS_FILE = "/data/module_status.json";
-const MANAGER_STATUS_FILE = "/data/manager_status.json";
-const SERVERS_FILE = "/data/servers.txt";
-const ROOTED_FILE = "/data/rooted.txt";
-const TARGETS_FILE = "/data/targets.txt";
-const PREPPED_FILE = "/data/prepped.txt";
-const CONTRACTS_FILE = "/data/contracts_status.txt";
-const DISABLED_PREFIX = "/data/disabled_";
+import {
+  CONTRACTS_STATUS_FILE,
+  DISABLED_PREFIX,
+  MANAGER_STATUS_FILE,
+  MODULE_ROWS,
+  MODULE_STATUS_FILE,
+  LITE_ROWS,
+  PREPPED_FILE,
+  ROOTED_FILE,
+  SERVER_MAP_FILE,
+  SERVERS_FILE,
+  TARGETS_FILE,
+  get_worker_kind,
+} from "/modules/runtime-contracts.js";
 
-const MODULE_ROWS = [
-  { file: "root.js", label: "Root" },
-  { file: "manager.js", label: "Manager" },
-  { file: "hud.js", label: "HUD" },
-  { file: "buy-servers.js", label: "Servers" },
-  { file: "contracts.js", label: "Contracts" },
-];
-
-const LITE_ROWS = [
-  { file: "root-lite.js", label: "RootLite" },
-  { file: "deploy-lite.js", label: "DeployLite" },
-];
+const CONTRACTS_FILE = CONTRACTS_STATUS_FILE;
 
 const argsSchema = [
   ["refresh", 1000],
@@ -321,7 +316,7 @@ function collect_live_hwgw(ns) {
   for (const host of hosts) {
     if (!ns.serverExists(host) || !ns.hasRootAccess(host)) continue;
     for (const process of ns.ps(host)) {
-      const kind = hwgw_kind(process.filename);
+      const kind = get_worker_kind(process.filename);
       if (!kind) continue;
 
       jobs += 1;
@@ -385,14 +380,6 @@ function read_hosts_for_hwgw(ns) {
   return [...hosts];
 }
 
-function hwgw_kind(filename) {
-  if (!filename) return "";
-  if (filename.endsWith("/b-hack.js") || filename === "b-hack.js") return "hack";
-  if (filename.endsWith("/b-grow.js") || filename === "b-grow.js") return "grow";
-  if (filename.endsWith("/b-weak.js") || filename === "b-weak.js") return "weak";
-  return "";
-}
-
 function short_host(hostname) {
   if (!hostname) return "unknown";
   if (hostname.length <= 16) return hostname;
@@ -437,7 +424,7 @@ function collect_live_prep(ns) {
   let target = "";
 
   for (const process of ns.ps("home")) {
-    const kind = prep_kind(process.filename);
+    const kind = get_worker_kind(process.filename);
     if (!kind) continue;
     jobs += 1;
     const threads = to_num(process.threads);
@@ -449,15 +436,6 @@ function collect_live_prep(ns) {
 
   return { jobs, hackThreads: hack_threads, growThreads: grow_threads, weakThreads: weak_threads, target };
 }
-
-function prep_kind(filename) {
-  if (!filename) return "";
-  if (filename.endsWith("/w-hack.js") || filename === "w-hack.js") return "hack";
-  if (filename.endsWith("/w-grow.js") || filename === "w-grow.js") return "grow";
-  if (filename.endsWith("/w-weak.js") || filename === "w-weak.js") return "weak";
-  return "";
-}
-
 function fmt_income(per_sec) {
   const val = Number(per_sec);
   if (!Number.isFinite(val) || val <= 0) return "$0/s";

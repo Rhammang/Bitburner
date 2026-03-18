@@ -1,15 +1,24 @@
 import { list_servers } from "/modules/utils.js";
+import {
+  DEPLOY_LITE_HOME_RESERVE,
+  DEPLOY_LITE_LOOP_MS,
+  DEPLOY_LITE_WORKER_FILE,
+  DEPLOY_LITE_WORKER_RAM,
+  DEPLOY_LITE_WORKER_SOURCE,
+  DEPLOY_LITE_WORKER_SYNC_INTERVAL_MS,
+  MANAGER_MODULE_FILE,
+  ROOTED_FILE,
+  normalize_script_filename,
+} from "/modules/runtime-contracts.js";
 
-const ROOTED_FILE = "/data/rooted.txt";
-const WORKER_FILE = "/w-lite-cycle.js";
-const LOOP_MS = 5000;
-const HOME_RESERVE = 16;
-const WORKER_RAM = 1.75;
-const WORKER_SYNC_INTERVAL_MS = 120000;
+const WORKER_FILE = DEPLOY_LITE_WORKER_FILE;
+const LOOP_MS = DEPLOY_LITE_LOOP_MS;
+const HOME_RESERVE = DEPLOY_LITE_HOME_RESERVE;
+const WORKER_RAM = DEPLOY_LITE_WORKER_RAM;
+const WORKER_SYNC_INTERVAL_MS = DEPLOY_LITE_WORKER_SYNC_INTERVAL_MS;
 let worker_sync_cache = {};
 
-const WORKER_SOURCE =
-  "export async function main(ns) { const target = ns.args[0]; while (true) { if (!ns.serverExists(target)) return; const maxMoney = ns.getServerMaxMoney(target); const money = ns.getServerMoneyAvailable(target); const minSec = ns.getServerMinSecurityLevel(target); const sec = ns.getServerSecurityLevel(target); if (sec > minSec + 5) { await ns.weaken(target); } else if (money < maxMoney * 0.85) { await ns.grow(target); } else { await ns.hack(target); } } }";
+const WORKER_SOURCE = DEPLOY_LITE_WORKER_SOURCE;
 
 /** @param {NS} ns */
 export async function main(ns) {
@@ -17,7 +26,7 @@ export async function main(ns) {
   ensure_worker(ns);
 
   while (true) {
-    if (ns.isRunning("/modules/manager.js", "home")) return;
+    if (ns.isRunning(MANAGER_MODULE_FILE, "home")) return;
 
     const rooted_hosts = read_rooted_hosts(ns);
     const target = pick_target(ns, rooted_hosts);
@@ -63,12 +72,12 @@ export async function main(ns) {
 
       const processes = ns.ps(host);
       const running_same_target = processes.some(
-        (p) => p.filename === WORKER_FILE && p.args[0] === target
+        (p) => normalize_script_filename(p.filename) === WORKER_FILE && p.args[0] === target
       );
       if (running_same_target) continue;
 
       for (const process of processes) {
-        if (process.filename === WORKER_FILE) {
+        if (normalize_script_filename(process.filename) === WORKER_FILE) {
           ns.kill(process.pid);
         }
       }

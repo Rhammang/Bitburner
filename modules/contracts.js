@@ -1,6 +1,9 @@
 import { list_servers } from "/modules/utils.js";
+import {
+  CONTRACTS_STATUS_FILE,
+} from "/modules/runtime-contracts.js";
 
-const STATUS_FILE = "/data/contracts_status.txt";
+const STATUS_FILE = CONTRACTS_STATUS_FILE;
 const LOOP_MS = 60000;
 
 /** @param {NS} ns */

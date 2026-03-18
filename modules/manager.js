@@ -1,57 +1,40 @@
 import { list_servers, get_hosts } from "/modules/utils.js";
+import {
+  MANAGER_BATCHES_PER_WINDOW_DEFAULT,
+  MANAGER_HACK_PERCENT_DEFAULT,
+  MANAGER_HOME_RESERVE_DEFAULT,
+  MANAGER_LOOP_SLEEP_MS_DEFAULT,
+  MANAGER_MIN_EXEC_RAM,
+  MANAGER_MIN_INCOME_RAM,
+  MANAGER_PREP_SLEEP_MS_DEFAULT,
+  MANAGER_SCHEDULE_AHEAD_MS_DEFAULT,
+  MANAGER_SERVER_MAP_WRITE_INTERVAL_MS,
+  MANAGER_SPACING_MS_DEFAULT,
+  MANAGER_STATUS_FILE,
+  MANAGER_STATUS_WRITE_INTERVAL_MS,
+  MANAGER_WORKER_SYNC_INTERVAL_MS,
+  SERVER_MAP_FILE,
+  WORKER_RAM_COSTS,
+  WORKER_SOURCES,
+  WORKERS,
+  build_script_target_counts,
+  is_prep_worker,
+  script_target_counts_equal,
+} from "/modules/runtime-contracts.js";
 
-const SERVER_MAP_FILE = "/data/server_map.json";
-const MANAGER_STATUS_FILE = "/data/manager_status.json";
-
-// Script paths
-const WORKERS = {
-  PREP_WEAK: "/w-weak.js",
-  PREP_GROW: "/w-grow.js",
-  PREP_HACK: "/w-hack.js",
-  HACK: "/b-hack.js",
-  WEAK: "/b-weak.js",
-  GROW: "/b-grow.js",
-};
-
-const WORKER_SOURCES = {
-  [WORKERS.PREP_WEAK]:
-    "export async function main(ns) { while (true) { await ns.weaken(ns.args[0]); } }",
-  [WORKERS.PREP_GROW]:
-    "export async function main(ns) { while (true) { await ns.grow(ns.args[0]); } }",
-  [WORKERS.PREP_HACK]:
-    "export async function main(ns) { while (true) { await ns.hack(ns.args[0]); } }",
-  [WORKERS.HACK]:
-    "export async function main(ns) { if (ns.args[1] > 0) await ns.sleep(ns.args[1]); await ns.hack(ns.args[0]); }",
-  [WORKERS.WEAK]:
-    "export async function main(ns) { if (ns.args[1] > 0) await ns.sleep(ns.args[1]); await ns.weaken(ns.args[0]); }",
-  [WORKERS.GROW]:
-    "export async function main(ns) { if (ns.args[1] > 0) await ns.sleep(ns.args[1]); await ns.grow(ns.args[0]); }",
-};
-
-// Script RAM costs
-const RAM = {
-  PREP_WEAK: 1.75,
-  PREP_GROW: 1.75,
-  PREP_HACK: 1.7,
-  HACK: 1.7,
-  WEAK: 1.75,
-  GROW: 1.75,
-};
-
-const MIN_EXEC_RAM = 1.7;
-const MIN_INCOME_RAM = 32; // hosts need at least 32GB to run income workers
-const WORKER_SYNC_INTERVAL_MS = 120000;
-const SERVER_MAP_WRITE_INTERVAL_MS = 5000;
-const STATUS_WRITE_INTERVAL_MS = 5000;
+const RAM = WORKER_RAM_COSTS;
+const WORKER_SYNC_INTERVAL_MS = MANAGER_WORKER_SYNC_INTERVAL_MS;
+const SERVER_MAP_WRITE_INTERVAL_MS = MANAGER_SERVER_MAP_WRITE_INTERVAL_MS;
+const STATUS_WRITE_INTERVAL_MS = MANAGER_STATUS_WRITE_INTERVAL_MS;
 
 const argsSchema = [
-  ["home-reserve", 16],
-  ["spacing", 200],
-  ["batches-per-window", 5],
-  ["schedule-ahead-time", 20000],
-  ["loop-sleep", 1000],
-  ["prep-sleep", 2000],
-  ["hack-percent", 0.15],
+  ["home-reserve", MANAGER_HOME_RESERVE_DEFAULT],
+  ["spacing", MANAGER_SPACING_MS_DEFAULT],
+  ["batches-per-window", MANAGER_BATCHES_PER_WINDOW_DEFAULT],
+  ["schedule-ahead-time", MANAGER_SCHEDULE_AHEAD_MS_DEFAULT],
+  ["loop-sleep", MANAGER_LOOP_SLEEP_MS_DEFAULT],
+  ["prep-sleep", MANAGER_PREP_SLEEP_MS_DEFAULT],
+  ["hack-percent", MANAGER_HACK_PERCENT_DEFAULT],
   ["verbose", false],
 ];
 
@@ -252,14 +235,12 @@ async function run_prep_workers(ns, target, income_target, home_reserve) {
 
     // Check if current workers match expected state exactly
     const prep_procs = procs.filter((p) => is_prep_script(p.filename));
-    const all_present = expected.every((exp) =>
-      prep_procs.some((p) => p.filename === exp.script && p.args[0] === exp.target)
-    );
-    const no_extras = prep_procs.every((p) =>
-      expected.some((exp) => exp.script === p.filename && exp.target === p.args[0])
+    const expected_counts = build_script_target_counts(expected);
+    const actual_counts = build_script_target_counts(
+      prep_procs.map((p) => ({ script: p.filename, target: p.args[0] }))
     );
 
-    if (all_present && no_extras) continue;
+    if (script_target_counts_equal(expected_counts, actual_counts)) continue;
 
     // Workers are wrong — kill all prep scripts and relaunch
     prep_procs.forEach((p) => ns.kill(p.pid));
@@ -283,9 +264,7 @@ function get_prep_hosts(ns) {
 }
 
 function is_prep_script(filename) {
-  return filename === WORKERS.PREP_GROW ||
-    filename === WORKERS.PREP_WEAK ||
-    filename === WORKERS.PREP_HACK;
+  return is_prep_worker(filename);
 }
 
 function target_needs_grow(ns, hostname) {

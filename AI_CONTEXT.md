@@ -70,6 +70,22 @@ progression automation without manual babysitting.
 - Expand module diagnostics (last success time, fail counts, blocked reason).
 - Optionally support configurable auto-purchase of stock access.
 
+## Reference Inspirations
+Use these as implementation references when planning new modules or refactors:
+- [alainbryden/bitburner-scripts](https://github.com/alainbryden/bitburner-scripts) - strong daemon-style orchestration, progression helpers, and broad automation coverage.
+- [chrisrabe/bitburner-automation](https://github.com/chrisrabe/bitburner-automation) - stable progression automation and a clean practical repo structure.
+- [jjclark1982/bitburner-scripts](https://github.com/jjclark1982/bitburner-scripts) - broad module coverage including stocks and contracts.
+- [bitburner-official/bitburner-scripts](https://github.com/bitburner-official/bitburner-scripts) - official baseline examples for common Bitburner workflows.
+- [bitburner-official/typescript-template](https://github.com/bitburner-official/typescript-template) - modern authoring and remote sync workflow reference.
+- [bitburner-official/bitburner-filesync](https://github.com/bitburner-official/bitburner-filesync) - official file synchronization reference.
+- [Tanimodori/viteburner](https://github.com/Tanimodori/viteburner) - developer tooling, sync, and daemon-oriented utilities.
+- [Nezrahm/bitburner-sync](https://github.com/Nezrahm/bitburner-sync) - lightweight sync tooling and release-driven updates.
+
+## Next Modification
+- First refactor target: extract a shared runtime contract layer for module registry, worker script definitions, and tuning constants so `daemon.js`, `modules/manager.js`, `diag.js`, and `modules/hud.js` stop duplicating the same knowledge.
+- Use `alainbryden/bitburner-scripts` and the official Bitburner repos as the main shape reference for that split, then borrow sync workflow ideas from `bitburner-filesync`, `viteburner`, and `bitburner-sync`.
+- After that shared layer exists, add a small config file for intervals, RAM budgets, and feature toggles so future tuning does not require touching multiple scripts.
+
 ## AI Guardrails
 - Do not remove startup clearing of `/data/disabled_*.js`.
 - Keep `/data/rooted.txt` as deploy input.
