@@ -218,7 +218,9 @@ function cleanup_schedule() {
 }
 
 async function run_prep_workers(ns, target, income_target, home_reserve) {
-  const income_host = income_target || target.hostname;
+  // Don't fall back to hacking the prep target — it's counterproductive
+  const income_host = income_target || "";
+  const needs_grow = target_needs_grow(ns, target.hostname);
   const prep_hosts = get_prep_hosts(ns);
 
   // Sync worker scripts to purchased servers if missing
@@ -230,39 +232,36 @@ async function run_prep_workers(ns, target, income_target, home_reserve) {
     }
   }
 
-  // Kill misaligned workers: grow/weak must target prep host, hack must target income host
-  let killed_any = false;
-  for (const hostname of prep_hosts) {
-    for (const p of ns.ps(hostname)) {
-      if (!is_prep_script(p.filename)) continue;
-      const is_hack = p.filename === WORKERS.PREP_HACK;
-      const correct_target = is_hack ? income_host : target.hostname;
-      if (p.args[0] === correct_target) continue;
-      ns.kill(p.pid);
-      killed_any = true;
-    }
-  }
-  if (killed_any) await ns.sleep(200);
-
-  // Launch workers on each host that is missing them
+  // Check and fix each host's worker state
   for (const hostname of prep_hosts) {
     const procs = ns.ps(hostname);
     const is_home = hostname === "home";
-    const has_grow = procs.some((p) => p.filename === WORKERS.PREP_GROW && p.args[0] === target.hostname);
-    const has_weak = procs.some((p) => p.filename === WORKERS.PREP_WEAK && p.args[0] === target.hostname);
-    const has_hack = is_home && procs.some((p) => p.filename === WORKERS.PREP_HACK && p.args[0] === income_host);
-    // Also check for stale workers targeting wrong hosts (can linger if kill took > 200ms to propagate)
-    const has_wrong = procs.some((p) => {
-      if (!is_prep_script(p.filename)) return false;
-      const expect = p.filename === WORKERS.PREP_HACK ? income_host : target.hostname;
-      return p.args[0] !== expect;
-    });
+    const wants_income = is_home && income_host && income_host !== target.hostname;
 
-    if (has_grow && has_weak && (!is_home || has_hack) && !has_wrong) continue;
+    // Build expected worker configuration for this host
+    const expected = [];
+    if (needs_grow) expected.push({ script: WORKERS.PREP_GROW, target: target.hostname });
+    expected.push({ script: WORKERS.PREP_WEAK, target: target.hostname });
+    if (wants_income) {
+      expected.push({ script: WORKERS.PREP_HACK, target: income_host });
+      expected.push({ script: WORKERS.PREP_GROW, target: income_host });
+      expected.push({ script: WORKERS.PREP_WEAK, target: income_host });
+    }
 
-    // Kill partial state before relaunching
-    procs.filter((p) => is_prep_script(p.filename)).forEach((p) => ns.kill(p.pid));
-    await ns.sleep(50);
+    // Check if current workers match expected state exactly
+    const prep_procs = procs.filter((p) => is_prep_script(p.filename));
+    const all_present = expected.every((exp) =>
+      prep_procs.some((p) => p.filename === exp.script && p.args[0] === exp.target)
+    );
+    const no_extras = prep_procs.every((p) =>
+      expected.some((exp) => exp.script === p.filename && exp.target === p.args[0])
+    );
+
+    if (all_present && no_extras) continue;
+
+    // Workers are wrong — kill all prep scripts and relaunch
+    prep_procs.forEach((p) => ns.kill(p.pid));
+    if (prep_procs.length > 0) await ns.sleep(50);
 
     const available_ram = Math.max(
       0,
@@ -287,47 +286,92 @@ function is_prep_script(filename) {
     filename === WORKERS.PREP_HACK;
 }
 
+function target_needs_grow(ns, hostname) {
+  try {
+    const srv = ns.getServer(hostname);
+    return srv.moneyMax > 0 && srv.moneyAvailable < srv.moneyMax * 0.99;
+  } catch {
+    return true;
+  }
+}
+
+function launch_income_workers(ns, hostname, income_host, available_ram) {
+  // Sustainable loop hacking: ~5% hack, ~80% grow (sustain money), ~15% weaken (offset security)
+  const min_income_ram = RAM.PREP_HACK + RAM.PREP_GROW + RAM.PREP_WEAK;
+  if (available_ram < min_income_ram) return;
+
+  const hack_threads = Math.max(1, Math.floor((available_ram * 0.05) / RAM.PREP_HACK));
+  const weak_threads = Math.max(1, Math.floor((available_ram * 0.15) / RAM.PREP_WEAK));
+  const remaining_ram = available_ram - hack_threads * RAM.PREP_HACK - weak_threads * RAM.PREP_WEAK;
+  const grow_threads = Math.max(1, Math.floor(remaining_ram / RAM.PREP_GROW));
+
+  const total = hack_threads * RAM.PREP_HACK + grow_threads * RAM.PREP_GROW + weak_threads * RAM.PREP_WEAK;
+  if (total > available_ram) return;
+
+  ns.exec(WORKERS.PREP_HACK, hostname, hack_threads, income_host);
+  ns.exec(WORKERS.PREP_GROW, hostname, grow_threads, income_host);
+  ns.exec(WORKERS.PREP_WEAK, hostname, weak_threads, income_host);
+}
+
 function launch_home_prep(ns, target_host, income_host, available_ram) {
-  if (available_ram < RAM.PREP_HACK) return;
+  if (available_ram < MIN_EXEC_RAM) return;
 
-  const max_hack_threads = Math.max(1, Math.floor(available_ram / RAM.PREP_HACK));
-  const hack_threads = clamp(Math.floor(max_hack_threads * 0.12), 1, 8);
-  const prep_ram = Math.max(0, available_ram - hack_threads * RAM.PREP_HACK);
+  const needs_grow = target_needs_grow(ns, target_host);
+  const has_income = income_host && income_host !== target_host;
 
-  let grow_threads = Math.floor(prep_ram / (RAM.PREP_GROW + RAM.PREP_WEAK / 12));
-  let weak_threads = Math.max(1, Math.ceil((grow_threads * 0.004 + hack_threads * 0.002) / 0.05));
-
-  while (
-    grow_threads > 0 &&
-    grow_threads * RAM.PREP_GROW + weak_threads * RAM.PREP_WEAK + hack_threads * RAM.PREP_HACK >
-      available_ram
-  ) {
-    grow_threads -= 1;
-    weak_threads = Math.max(1, Math.ceil((grow_threads * 0.004 + hack_threads * 0.002) / 0.05));
+  // Reserve a portion for sustainable income workers when we have a valid income target
+  let income_ram = 0;
+  if (has_income) {
+    income_ram = Math.floor(available_ram * 0.15);
+    launch_income_workers(ns, "home", income_host, income_ram);
   }
 
-  if (grow_threads > 0) ns.exec(WORKERS.PREP_GROW, "home", grow_threads, target_host);
-  if (weak_threads > 0) ns.exec(WORKERS.PREP_WEAK, "home", weak_threads, target_host);
-  if (hack_threads > 0) ns.exec(WORKERS.PREP_HACK, "home", hack_threads, income_host);
+  const prep_ram = available_ram - income_ram;
+  if (prep_ram < MIN_EXEC_RAM) return;
+
+  if (needs_grow) {
+    // Server needs money — grow-heavy ratio with weaken to offset security
+    let grow_threads = Math.floor(prep_ram / (RAM.PREP_GROW + RAM.PREP_WEAK / 12));
+    let weak_threads = Math.max(1, Math.ceil(grow_threads * 0.004 / 0.05));
+    while (
+      grow_threads > 0 &&
+      grow_threads * RAM.PREP_GROW + weak_threads * RAM.PREP_WEAK > prep_ram
+    ) {
+      grow_threads -= 1;
+      weak_threads = Math.max(1, Math.ceil(grow_threads * 0.004 / 0.05));
+    }
+    if (grow_threads > 0) ns.exec(WORKERS.PREP_GROW, "home", grow_threads, target_host);
+    if (weak_threads > 0) ns.exec(WORKERS.PREP_WEAK, "home", weak_threads, target_host);
+  } else {
+    // Money is full — weaken only to bring down security
+    const weak_threads = Math.floor(prep_ram / RAM.PREP_WEAK);
+    if (weak_threads > 0) ns.exec(WORKERS.PREP_WEAK, "home", weak_threads, target_host);
+  }
 }
 
 function launch_remote_prep(ns, hostname, target_host, available_ram) {
   if (available_ram < RAM.PREP_WEAK) return;
 
-  // Same grow/weak ratio as home (1 weak per 12 grow to offset security), no hack
-  let grow_threads = Math.floor(available_ram / (RAM.PREP_GROW + RAM.PREP_WEAK / 12));
-  let weak_threads = Math.max(1, Math.ceil(grow_threads * 0.004 / 0.05));
+  const needs_grow = target_needs_grow(ns, target_host);
 
-  while (
-    grow_threads > 0 &&
-    grow_threads * RAM.PREP_GROW + weak_threads * RAM.PREP_WEAK > available_ram
-  ) {
-    grow_threads -= 1;
-    weak_threads = Math.max(1, Math.ceil(grow_threads * 0.004 / 0.05));
+  if (needs_grow) {
+    // Server needs money — grow-heavy ratio with weaken to offset security
+    let grow_threads = Math.floor(available_ram / (RAM.PREP_GROW + RAM.PREP_WEAK / 12));
+    let weak_threads = Math.max(1, Math.ceil(grow_threads * 0.004 / 0.05));
+    while (
+      grow_threads > 0 &&
+      grow_threads * RAM.PREP_GROW + weak_threads * RAM.PREP_WEAK > available_ram
+    ) {
+      grow_threads -= 1;
+      weak_threads = Math.max(1, Math.ceil(grow_threads * 0.004 / 0.05));
+    }
+    if (grow_threads > 0) ns.exec(WORKERS.PREP_GROW, hostname, grow_threads, target_host);
+    if (weak_threads > 0) ns.exec(WORKERS.PREP_WEAK, hostname, weak_threads, target_host);
+  } else {
+    // Money is full — weaken only to bring down security
+    const weak_threads = Math.floor(available_ram / RAM.PREP_WEAK);
+    if (weak_threads > 0) ns.exec(WORKERS.PREP_WEAK, hostname, weak_threads, target_host);
   }
-
-  if (grow_threads > 0) ns.exec(WORKERS.PREP_GROW, hostname, grow_threads, target_host);
-  if (weak_threads > 0) ns.exec(WORKERS.PREP_WEAK, hostname, weak_threads, target_host);
 }
 
 function ensure_local_worker_scripts(ns) {
@@ -581,7 +625,7 @@ function pick_prep_income_target(ns, hack_targets) {
     cached_income_target = t.hostname;
     return t.hostname;
   }
-  // Fall back to prep target itself (hack worker will drain what we're growing, but no oscillation)
+  // No suitable income target — caller will skip income workers entirely
   return "";
 }
 
