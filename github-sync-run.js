@@ -47,8 +47,9 @@ export async function main(ns) {
   }
 
   const stats = await sync_files(ns, options, files);
+  const commit_info = await fetch_latest_commit_info(ns, options);
   ns.tprint(
-    `GITHUB ${options.mode.toUpperCase()}: updated=${stats.updated} failed=${stats.failed} total=${files.length}`
+    `GITHUB ${options.mode.toUpperCase()}: updated=${stats.updated} failed=${stats.failed} total=${files.length} | latest commit: ${commit_info}`
   );
 
   if (options.mode !== "run") return;
@@ -225,6 +226,21 @@ function join_path(prefix, path) {
   if (!left) return right;
   if (!right) return left;
   return `${left}/${right}`;
+}
+
+async function fetch_latest_commit_info(ns, options) {
+  try {
+    const url = `https://api.github.com/repos/${options.owner}/${options.repo}/commits/${encodeURIComponent(options.branch)}`;
+    const data = await fetch_json_via_wget(ns, url);
+    const date = data?.commit?.committer?.date || data?.commit?.author?.date;
+    const msg = (data?.commit?.message || "").split("\n")[0].slice(0, 50);
+    if (!date) return "unknown";
+    const d = new Date(date);
+    const ts = d.toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false });
+    return `${ts} "${msg}"`;
+  } catch {
+    return "unavailable";
+  }
 }
 
 function dedupe(items) {
