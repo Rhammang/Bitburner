@@ -224,7 +224,7 @@ async function run_prep_workers(ns, target, income_target, home_reserve, prep_ho
     target: target.hostname,
     incomeTarget: income_host,
     hybridMode: Boolean(hybrid_mode),
-    needsGrow,
+    needsGrow: needs_grow,
     prepHostCount: prep_hosts.length,
     unchangedHosts: 0,
     adjustedHosts: 0,
