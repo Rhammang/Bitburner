@@ -49,7 +49,7 @@ export async function main(ns) {
   const stats = await sync_files(ns, options, files);
   const commit_info = await fetch_latest_commit_info(ns, options);
   ns.tprint(
-    `GITHUB ${options.mode.toUpperCase()}: updated=${stats.updated} failed=${stats.failed} total=${files.length} | latest commit: ${commit_info}`
+    `GITHUB ${options.mode.toUpperCase()}: ${stats.updated} updated, ${stats.unchanged} unchanged, ${stats.failed} failed (${files.length} total) | latest commit: ${commit_info}`
   );
 
   if (options.mode !== "run") return;
@@ -183,23 +183,36 @@ async function fetch_json_via_wget(ns, url) {
 async function sync_files(ns, options, files) {
   const base_url = `https://raw.githubusercontent.com/${options.owner}/${options.repo}/${options.branch}`;
   let updated = 0;
+  let unchanged = 0;
   let failed = 0;
 
   for (const repo_file of files) {
     const local_file = join_path(options.prefix, repo_file);
+    const old_content = ns.fileExists(local_file, "home") ? ns.read(local_file) : null;
     const remote = `${base_url}/${repo_file}?ts=${Date.now()}`;
     if (options.verbose) ns.print(`wget ${remote} -> ${local_file}`);
 
     const ok = await ns.wget(remote, local_file);
-    if (ok) {
-      updated += 1;
-    } else {
+    if (!ok) {
       failed += 1;
-      ns.tprint(`FAILED: ${repo_file}`);
+      ns.tprint(`  FAILED  ${repo_file}`);
+      continue;
+    }
+
+    const new_content = ns.read(local_file);
+    if (old_content === null) {
+      updated += 1;
+      ns.tprint(`  NEW     ${repo_file}`);
+    } else if (new_content !== old_content) {
+      updated += 1;
+      ns.tprint(`  UPDATED ${repo_file}`);
+    } else {
+      unchanged += 1;
+      ns.tprint(`  ok      ${repo_file}`);
     }
   }
 
-  return { updated, failed };
+  return { updated, unchanged, failed };
 }
 
 function should_include_file(path, extensions) {
