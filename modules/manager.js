@@ -39,6 +39,7 @@ const RAM = {
 };
 
 const MIN_EXEC_RAM = 1.7;
+const MIN_INCOME_RAM = 32; // hosts need at least 32GB to run income workers
 const WORKER_SYNC_INTERVAL_MS = 120000;
 const SERVER_MAP_WRITE_INTERVAL_MS = 5000;
 const STATUS_WRITE_INTERVAL_MS = 5000;
@@ -236,7 +237,8 @@ async function run_prep_workers(ns, target, income_target, home_reserve) {
   for (const hostname of prep_hosts) {
     const procs = ns.ps(hostname);
     const is_home = hostname === "home";
-    const wants_income = is_home && income_host && income_host !== target.hostname;
+    const host_max_ram = ns.getServerMaxRam(hostname);
+    const wants_income = income_host && income_host !== target.hostname && host_max_ram >= MIN_INCOME_RAM;
 
     // Build expected worker configuration for this host
     const expected = [];
@@ -271,13 +273,13 @@ async function run_prep_workers(ns, target, income_target, home_reserve) {
     if (is_home) {
       launch_home_prep(ns, target.hostname, income_host, available_ram);
     } else {
-      launch_remote_prep(ns, hostname, target.hostname, available_ram);
+      launch_remote_prep(ns, hostname, target.hostname, available_ram, income_host);
     }
   }
 }
 
 function get_prep_hosts(ns) {
-  return ["home", ...ns.getPurchasedServers()];
+  return get_hosts(ns);
 }
 
 function is_prep_script(filename) {
@@ -349,18 +351,29 @@ function launch_home_prep(ns, target_host, income_host, available_ram) {
   }
 }
 
-function launch_remote_prep(ns, hostname, target_host, available_ram) {
+function launch_remote_prep(ns, hostname, target_host, available_ram, income_host) {
   if (available_ram < RAM.PREP_WEAK) return;
 
   const needs_grow = target_needs_grow(ns, target_host);
+  const has_income = income_host && income_host !== target_host;
+
+  // Reserve a portion for income workers when we have a valid income target
+  let income_ram = 0;
+  if (has_income) {
+    income_ram = Math.floor(available_ram * 0.15);
+    launch_income_workers(ns, hostname, income_host, income_ram);
+  }
+
+  const prep_ram = available_ram - income_ram;
+  if (prep_ram < RAM.PREP_WEAK) return;
 
   if (needs_grow) {
     // Server needs money — grow-heavy ratio with weaken to offset security
-    let grow_threads = Math.floor(available_ram / (RAM.PREP_GROW + RAM.PREP_WEAK / 12));
+    let grow_threads = Math.floor(prep_ram / (RAM.PREP_GROW + RAM.PREP_WEAK / 12));
     let weak_threads = Math.max(1, Math.ceil(grow_threads * 0.004 / 0.05));
     while (
       grow_threads > 0 &&
-      grow_threads * RAM.PREP_GROW + weak_threads * RAM.PREP_WEAK > available_ram
+      grow_threads * RAM.PREP_GROW + weak_threads * RAM.PREP_WEAK > prep_ram
     ) {
       grow_threads -= 1;
       weak_threads = Math.max(1, Math.ceil(grow_threads * 0.004 / 0.05));
@@ -369,7 +382,7 @@ function launch_remote_prep(ns, hostname, target_host, available_ram) {
     if (weak_threads > 0) ns.exec(WORKERS.PREP_WEAK, hostname, weak_threads, target_host);
   } else {
     // Money is full — weaken only to bring down security
-    const weak_threads = Math.floor(available_ram / RAM.PREP_WEAK);
+    const weak_threads = Math.floor(prep_ram / RAM.PREP_WEAK);
     if (weak_threads > 0) ns.exec(WORKERS.PREP_WEAK, hostname, weak_threads, target_host);
   }
 }
