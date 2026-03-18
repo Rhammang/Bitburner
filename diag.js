@@ -19,6 +19,7 @@ import {
   SERVER_MAP_FILE,
   TARGETS_FILE,
   WORKER_FILES,
+  normalize_script_filename,
 } from "/modules/runtime-contracts.js";
 
 const CONTRACTS_FILE = CONTRACTS_STATUS_FILE;
@@ -68,28 +69,37 @@ export async function main(ns) {
     ns.tprint("  ⚠ No manager_status.json found — manager may not be running");
   } else {
     ns.tprint(`  Mode: ${mgr.mode || "unknown"}  |  Updated: ${mgr.timestamp || "unknown"}`);
-    if (mgr.mode === "PREP") {
+    const prep_mode = mgr.mode === "PREP" || mgr.mode === "HYBRID";
+    const batch_mode = mgr.mode === "HACK" || mgr.mode === "HYBRID";
+    if (prep_mode) {
       ns.tprint(`  Prep target: ${mgr.prepTarget || "none"}`);
       ns.tprint(`  Income target: ${mgr.prepIncomeTarget || "none"}`);
       ns.tprint(`  Targets: ${mgr.prepTargets || 0} prep / ${mgr.hackTargets || 0} hack / ${mgr.totalTargets || 0} total`);
+      if (mgr.prepHostCount) {
+        ns.tprint(`  Prep hosts: ${mgr.prepHostCount}`);
+      }
       if (mgr.prepDiag) {
-        ns.tprint(`  Prep diag state: ${mgr.prepDiag.state || "unknown"}`);
-        if (mgr.prepDiag.state === "running") {
-          ns.tprint(`    Workers: G${mgr.prepDiag.growThreads} W${mgr.prepDiag.weakThreads} H${mgr.prepDiag.hackThreads}`);
-          ns.tprint(`    Target: ${mgr.prepDiag.target}  Income: ${mgr.prepDiag.incomeTarget}`);
-        } else if (mgr.prepDiag.state === "retargeting") {
-          ns.tprint(`    Stale workers: ${(mgr.prepDiag.staleWorkers || []).join(", ")}`);
-        } else if (mgr.prepDiag.state === "ram-blocked") {
-          ns.tprint(`    Available RAM: ${fmt_ram(mgr.prepDiag.availableRam)}  Need: ${fmt_ram(mgr.prepDiag.neededRam)}  Reserve: ${fmt_ram(mgr.prepDiag.homeReserve)}`);
-        } else if (mgr.prepDiag.state === "launched") {
-          ns.tprint(`    Launched: G${mgr.prepDiag.growThreads}(pid:${mgr.prepDiag.growPid}) W${mgr.prepDiag.weakThreads}(pid:${mgr.prepDiag.weakPid}) H${mgr.prepDiag.hackThreads}(pid:${mgr.prepDiag.hackPid})`);
-          if (mgr.prepDiag.failed) ns.tprint("    ⚠ SOME EXEC CALLS FAILED (pid=0)");
+        ns.tprint(`  Prep diag: ${mgr.prepDiag.state || "unknown"}  | needsGrow=${mgr.prepDiag.needsGrow ? "yes" : "no"} hybrid=${mgr.prepDiag.hybridMode ? "yes" : "no"}`);
+        ns.tprint(`    Hosts: stable=${mgr.prepDiag.unchangedHosts || 0} adjusted=${mgr.prepDiag.adjustedHosts || 0} ram-limited=${mgr.prepDiag.ramLimitedHosts || 0}`);
+        ns.tprint(`    Cleanup: stale-hosts=${mgr.prepDiag.staleHostsCleared || 0} stale-workers=${mgr.prepDiag.staleWorkersKilled || 0}`);
+        ns.tprint(`    Threads: G${mgr.prepDiag.totalGrowThreads || 0} W${mgr.prepDiag.totalWeakThreads || 0} H${mgr.prepDiag.totalHackThreads || 0}`);
+        const prep_hosts = Array.isArray(mgr.prepDiag.hosts) ? mgr.prepDiag.hosts : [];
+        for (const host of prep_hosts.slice(0, 5)) {
+          ns.tprint(`    Host ${pad(host.hostname, 18)} ${pad(host.action, 11)} exp=${host.expectedScripts || 0} act=${host.actualScripts || 0} ram=${fmt_ram(host.availableRam)} G${host.growThreads || 0} W${host.weakThreads || 0} H${host.hackThreads || 0}`);
         }
       }
-    } else if (mgr.mode === "HACK") {
+    }
+    if (batch_mode) {
       ns.tprint(`  Batches launched: ${mgr.launchedBatches || 0}`);
       ns.tprint(`  Targets: ${mgr.hackTargets || 0} hack / ${mgr.prepTargets || 0} prep`);
       ns.tprint(`  Hosts: ${mgr.runnableHostCount || 0}/${mgr.hostCount || 0}  RAM: ${fmt_ram(mgr.availableRam)}`);
+      if (mgr.batchDiag) {
+        ns.tprint(`  Batch diag: ${mgr.batchDiag.state || "unknown"}  | blocked=${mgr.batchDiag.blockedTargets || 0} failed=${mgr.batchDiag.failedExecs || 0}`);
+        const batch_targets = Array.isArray(mgr.batchDiag.targets) ? mgr.batchDiag.targets : [];
+        for (const target of batch_targets.slice(0, 5)) {
+          ns.tprint(`    Target ${pad(target.target, 18)} launched=${target.launched || 0} reason=${target.reason || "unknown"}`);
+        }
+      }
     }
   }
 
@@ -97,8 +107,8 @@ export async function main(ns) {
   ns.tprint(`${thin}`);
   ns.tprint("▸ LIVE WORKER PROCESSES (home)");
   const home_procs = ns.ps("home");
-  const prep_procs = home_procs.filter((p) => PREP_SCRIPTS.has(p.filename));
-  const batch_procs_home = home_procs.filter((p) => BATCH_SCRIPTS.has(p.filename));
+  const prep_procs = home_procs.filter((p) => PREP_SCRIPTS.has(normalize_script_filename(p.filename)));
+  const batch_procs_home = home_procs.filter((p) => BATCH_SCRIPTS.has(normalize_script_filename(p.filename)));
 
   if (prep_procs.length === 0) {
     ns.tprint("  No prep workers on home");
@@ -132,7 +142,7 @@ export async function main(ns) {
     seen.add(host);
     if (!ns.serverExists(host) || !ns.hasRootAccess(host)) continue;
     const procs = ns.ps(host);
-    const batch_on_host = procs.filter((p) => BATCH_SCRIPTS.has(p.filename));
+    const batch_on_host = procs.filter((p) => BATCH_SCRIPTS.has(normalize_script_filename(p.filename)));
     if (batch_on_host.length > 0) {
       total_batch_jobs += batch_on_host.length;
       batch_by_host[host] = batch_on_host.length;

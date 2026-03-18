@@ -33,7 +33,7 @@ const argsSchema = [
  * @typedef {{state?: string, pid?: number, freeRam?: number, neededRam?: number, bootReserve?: number}} RuntimeModuleState
  * @typedef {{rootReady?: boolean, managerReady?: boolean}} BootState
  * @typedef {{timestamp?: string, boot?: BootState, modules?: Record<string, RuntimeModuleState>}} DaemonStatus
- * @typedef {{mode?: string, prepTarget?: string, prepIncomeTarget?: string, prepTargets?: number, hackTargets?: number, launchedBatches?: number, scheduledTargets?: number, availableRam?: number, hostCount?: number, runnableHostCount?: number, failedExecs?: number, timestamp?: string}} ManagerStatus
+ * @typedef {{mode?: string, prepTarget?: string, prepIncomeTarget?: string, prepTargets?: number, hackTargets?: number, launchedBatches?: number, scheduledTargets?: number, availableRam?: number, hostCount?: number, prepHostCount?: number, runnableHostCount?: number, failedExecs?: number, prepDiag?: any, batchDiag?: any, timestamp?: string}} ManagerStatus
  */
 
 export function autocomplete(data, args) {
@@ -108,7 +108,10 @@ export async function main(ns) {
     right.push(`h:${ram.homeUsed.toFixed(0)}/${ram.homeMax.toFixed(0)}GB t:${fmt_ram(ram.totalUsed)}/${fmt_ram(ram.totalMax)}`);
 
     // ── Mode-specific ─────────────────────────────────────────
-    if (mode === "PREP" && manager_status.prepTarget) {
+    const prep_mode = (mode === "PREP" || mode === "HYBRID") && manager_status.prepTarget;
+    const batch_mode = mode === "HACK" || mode === "HYBRID";
+
+    if (prep_mode) {
       const prep_host = String(manager_status.prepTarget);
       let money_pct = "?";
       let sec_delta = "?";
@@ -131,7 +134,19 @@ export async function main(ns) {
         ? `G${prep_live.growThreads} W${prep_live.weakThreads} H${prep_live.hackThreads}`
         : "none running");
 
-    } else if (mode === "HACK") {
+      const prep_hosts = to_num(manager_status.prepHostCount);
+      if (prep_hosts > 0) {
+        left.push("Prep Hosts");
+        right.push(String(prep_hosts));
+      }
+
+      if (manager_status.prepDiag?.state) {
+        left.push("Prep State");
+        right.push(`${manager_status.prepDiag.state} adj:${to_num(manager_status.prepDiag.adjustedHosts)}`);
+      }
+    }
+
+    if (batch_mode) {
       const sched = to_num(manager_status.scheduledTargets);
       left.push("Batch Live");
       right.push(`j${hwgw_live.jobs} sc${sched} t${hwgw_live.targetCount} H${hwgw_live.hackThreads} G${hwgw_live.growThreads} W${hwgw_live.weakThreads}`);
@@ -142,14 +157,20 @@ export async function main(ns) {
         right.push(`${failed} last cycle`);
       }
 
+      if (manager_status.batchDiag?.state) {
+        left.push("Batch State");
+        right.push(`${manager_status.batchDiag.state} blk:${to_num(manager_status.batchDiag.blockedTargets)}`);
+      }
+
       const top_targets = hwgw_live.targets.slice(0, target_rows);
       for (let i = 0; i < top_targets.length; i++) {
         const t = top_targets[i];
         left.push(`Target ${i + 1}`);
         right.push(`${short_host(t.hostname)} b${t.batches} H${t.hack} G${t.grow} W${t.weak}`);
       }
+    }
 
-    } else {
+    if (!prep_mode && !batch_mode) {
       left.push("Mode");
       right.push(mode || "waiting");
     }
@@ -218,13 +239,17 @@ function effectiveness_text(file, state, manager, metrics, refresh_ms, boot_read
   if (file === "manager.js") {
     const mode = String(manager.mode || "INIT");
     if (mode === "PREP") {
-      const ready_ratio = percent(metrics.prepped, metrics.targets);
-      return `prep ${to_num(manager.prepTargets)} ready ${ready_ratio}`;
+      const prep_state = String(manager.prepDiag?.state || "prep");
+      return `${prep_state} h${to_num(manager.prepHostCount)}`;
     }
-    if (mode === "HACK") {
+    if (mode === "HACK" || mode === "HYBRID") {
       const launched = to_num(manager.launchedBatches);
+      const blocked = to_num(manager.batchDiag?.blockedTargets);
       const targets = Math.max(1, to_num(manager.hackTargets));
       const batches_per_target = (launched / targets).toFixed(2);
+      if (mode === "HYBRID") {
+        return `hyb ${launched} blk ${blocked}`;
+      }
       return `hack ${launched} bpt ${batches_per_target}`;
     }
     return "waiting";

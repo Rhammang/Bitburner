@@ -48,6 +48,8 @@ let last_status_signature = "";
 let last_status_write_ms = 0;
 let cycle_failed_execs = 0;
 let cached_income_target = ""; // stable income target across cycles (prevents oscillation)
+const MAX_DIAG_HOSTS = 8;
+const MAX_DIAG_TARGETS = 8;
 
 export function autocomplete(data, args) {
   data.flags(argsSchema);
@@ -81,26 +83,17 @@ export async function main(ns) {
     const prep_targets = server_map.filter((s) => s.hasAdminRights && s.state === "PREP");
     const hack_targets = server_map.filter((s) => s.hasAdminRights && s.state === "HACK");
     const prep_target = prep_targets[0];
-    const prep_income_target = prep_target ? pick_prep_income_target(ns, hack_targets) : "";
+    const hybrid_mode = Boolean(prep_target && hack_targets.length > 0);
+    const prep_hosts = get_prep_hosts(ns, hybrid_mode);
+    const prep_income_target =
+      prep_target && !hybrid_mode ? pick_prep_income_target(ns, hack_targets) : "";
+    const prepDiag = prep_target
+      ? await run_prep_workers(ns, prep_target, prep_income_target, options.homeReserve, prep_hosts, hybrid_mode)
+      : { state: "idle" };
 
-    if (prep_target) {
-      await run_prep_workers(ns, prep_target, prep_income_target, options.homeReserve);
-      await write_manager_status(ns, {
-        mode: "PREP",
-        prepTarget: prep_target.hostname,
-        prepIncomeTarget: prep_income_target,
-        totalTargets: server_map.length,
-        prepTargets: prep_targets.length,
-        hackTargets: hack_targets.length,
-        launchedBatches: 0,
-        scheduledTargets: Object.keys(batch_schedule).length,
-        homeReserve: options.homeReserve,
-      }, cycle_start);
-      await ns.sleep(options.prepSleepMs);
-      continue;
+    if (!prep_target) {
+      stop_prep_workers(ns);
     }
-
-    stop_prep_workers(ns);
 
     const hosts = get_hosts(ns)
       .map((h) => ({
@@ -114,23 +107,40 @@ export async function main(ns) {
 
     cycle_failed_execs = 0;
     let launched_batches = 0;
+    const batch_results = [];
     for (const target of hack_targets) {
-      launched_batches += launch_batches_for_target(ns, target, runnable_hosts, options);
+      const result = launch_batches_for_target(ns, target, runnable_hosts, options);
+      launched_batches += result.launched;
+      batch_results.push(result);
     }
 
     const available_ram = runnable_hosts.reduce((acc, h) => acc + h.ram, 0);
+    const batchDiag = build_batch_diag(
+      hack_targets,
+      batch_results,
+      launched_batches,
+      cycle_failed_execs,
+      runnable_hosts,
+      hosts,
+      available_ram
+    );
     await write_manager_status(ns, {
-      mode: "HACK",
+      mode: prep_target ? (hybrid_mode ? "HYBRID" : "PREP") : "HACK",
+      prepTarget: prep_target ? prep_target.hostname : "",
+      prepIncomeTarget: prep_income_target,
       totalTargets: server_map.length,
       prepTargets: prep_targets.length,
       hackTargets: hack_targets.length,
       launchedBatches: launched_batches,
       scheduledTargets: Object.keys(batch_schedule).length,
       homeReserve: options.homeReserve,
+      prepHostCount: prep_target ? prep_hosts.length : 0,
       hostCount: hosts.length,
       runnableHostCount: runnable_hosts.length,
       availableRam: Math.floor(available_ram),
       failedExecs: cycle_failed_execs,
+      prepDiag,
+      batchDiag,
     }, cycle_start);
 
     if (options.verbose) {
@@ -140,7 +150,8 @@ export async function main(ns) {
     }
 
     const elapsed = Date.now() - cycle_start;
-    await ns.sleep(Math.max(50, options.loopSleepMs - elapsed));
+    const target_sleep = prep_target && !hybrid_mode ? options.prepSleepMs : options.loopSleepMs;
+    await ns.sleep(Math.max(50, target_sleep - elapsed));
   }
 }
 
@@ -203,14 +214,46 @@ function cleanup_schedule() {
   }
 }
 
-async function run_prep_workers(ns, target, income_target, home_reserve) {
+async function run_prep_workers(ns, target, income_target, home_reserve, prep_hosts, hybrid_mode) {
   // Don't fall back to hacking the prep target — it's counterproductive
   const income_host = income_target || "";
   const needs_grow = target_needs_grow(ns, target.hostname);
-  const prep_hosts = get_prep_hosts(ns);
+  const prep_host_set = new Set(prep_hosts);
+  const diag = {
+    state: "stable",
+    target: target.hostname,
+    incomeTarget: income_host,
+    hybridMode: Boolean(hybrid_mode),
+    needsGrow,
+    prepHostCount: prep_hosts.length,
+    unchangedHosts: 0,
+    adjustedHosts: 0,
+    ramLimitedHosts: 0,
+    staleHostsCleared: 0,
+    staleWorkersKilled: 0,
+    totalHackThreads: 0,
+    totalGrowThreads: 0,
+    totalWeakThreads: 0,
+    hosts: [],
+  };
 
   // Sync worker scripts to purchased servers if missing
   const scripts = Object.values(WORKERS);
+  for (const hostname of get_hosts(ns)) {
+    if (prep_host_set.has(hostname)) continue;
+    let cleared = 0;
+    for (const proc of ns.ps(hostname)) {
+      if (is_prep_script(proc.filename)) {
+        ns.kill(proc.pid);
+        cleared += 1;
+      }
+    }
+    if (cleared > 0) {
+      diag.staleHostsCleared += 1;
+      diag.staleWorkersKilled += cleared;
+    }
+  }
+
   for (const hostname of prep_hosts) {
     if (hostname === "home") continue;
     if (scripts.some((s) => !ns.fileExists(s, hostname))) {
@@ -242,7 +285,11 @@ async function run_prep_workers(ns, target, income_target, home_reserve) {
       prep_procs.map((p) => ({ script: p.filename, target: p.args[0] }))
     );
 
-    if (script_target_counts_equal(expected_counts, actual_counts)) continue;
+    if (script_target_counts_equal(expected_counts, actual_counts)) {
+      diag.unchangedHosts += 1;
+      capture_prep_host_diag(ns, diag, hostname, "stable", expected.length);
+      continue;
+    }
 
     // Workers are wrong — kill all prep scripts and relaunch
     prep_procs.forEach((p) => ns.kill(p.pid));
@@ -252,17 +299,43 @@ async function run_prep_workers(ns, target, income_target, home_reserve) {
       0,
       ns.getServerMaxRam(hostname) - ns.getServerUsedRam(hostname) - (is_home ? home_reserve : 0)
     );
+    diag.adjustedHosts += 1;
 
     if (is_home) {
-      launch_home_prep(ns, target.hostname, income_host, available_ram);
+      const launch = launch_home_prep(ns, target.hostname, income_host, available_ram);
+      capture_prep_host_diag(ns, diag, hostname, launch.state, expected.length, available_ram);
     } else {
-      launch_remote_prep(ns, hostname, target.hostname, available_ram, income_host);
+      const launch = launch_remote_prep(ns, hostname, target.hostname, available_ram, income_host);
+      capture_prep_host_diag(ns, diag, hostname, launch.state, expected.length, available_ram);
     }
   }
+
+  if (diag.ramLimitedHosts >= prep_hosts.length && prep_hosts.length > 0) {
+    diag.state = "ram-limited";
+  } else if (diag.adjustedHosts > 0 || diag.staleWorkersKilled > 0) {
+    diag.state = "adjusting";
+  }
+
+  return diag;
 }
 
-function get_prep_hosts(ns) {
-  return get_hosts(ns);
+function get_prep_hosts(ns, hybrid_mode) {
+  const hosts = get_hosts(ns).sort((a, b) => sort_hosts(
+    {
+      hostname: a,
+      ram: ns.getServerMaxRam(a) - ns.getServerUsedRam(a),
+    },
+    {
+      hostname: b,
+      ram: ns.getServerMaxRam(b) - ns.getServerUsedRam(b),
+    }
+  ));
+
+  if (!hybrid_mode) return hosts;
+
+  const purchased_hosts = new Set(ns.getPurchasedServers());
+  const prep_hosts = hosts.filter((hostname) => hostname === "home" || !purchased_hosts.has(hostname));
+  return prep_hosts.length > 0 ? prep_hosts : hosts.slice(0, 1);
 }
 
 function is_prep_script(filename) {
@@ -283,7 +356,9 @@ function launch_income_workers(ns, hostname, income_host, available_ram) {
   // Hack runs 4x faster than weaken and 3x faster than grow, so a small hack allocation
   // produces disproportionate drain — keep it minimal to prevent depleting the income target.
   const min_income_ram = RAM.PREP_HACK + RAM.PREP_GROW + RAM.PREP_WEAK;
-  if (available_ram < min_income_ram) return;
+  if (available_ram < min_income_ram) {
+    return { launched: false, hackThreads: 0, growThreads: 0, weakThreads: 0 };
+  }
 
   const hack_threads = Math.max(1, Math.floor((available_ram * 0.01) / RAM.PREP_HACK));
   const weak_threads = Math.max(1, Math.floor((available_ram * 0.12) / RAM.PREP_WEAK));
@@ -291,15 +366,25 @@ function launch_income_workers(ns, hostname, income_host, available_ram) {
   const grow_threads = Math.max(1, Math.floor(remaining_ram / RAM.PREP_GROW));
 
   const total = hack_threads * RAM.PREP_HACK + grow_threads * RAM.PREP_GROW + weak_threads * RAM.PREP_WEAK;
-  if (total > available_ram) return;
+  if (total > available_ram) {
+    return { launched: false, hackThreads: 0, growThreads: 0, weakThreads: 0 };
+  }
 
   ns.exec(WORKERS.PREP_HACK, hostname, hack_threads, income_host);
   ns.exec(WORKERS.PREP_GROW, hostname, grow_threads, income_host);
   ns.exec(WORKERS.PREP_WEAK, hostname, weak_threads, income_host);
+  return {
+    launched: true,
+    hackThreads: hack_threads,
+    growThreads: grow_threads,
+    weakThreads: weak_threads,
+  };
 }
 
 function launch_home_prep(ns, target_host, income_host, available_ram) {
-  if (available_ram < MIN_EXEC_RAM) return;
+  if (available_ram < MIN_EXEC_RAM) {
+    return { state: "ram-limited" };
+  }
 
   const needs_grow = target_needs_grow(ns, target_host);
   const has_income = income_host && income_host !== target_host;
@@ -312,7 +397,9 @@ function launch_home_prep(ns, target_host, income_host, available_ram) {
   }
 
   const prep_ram = available_ram - income_ram;
-  if (prep_ram < MIN_EXEC_RAM) return;
+  if (prep_ram < MIN_EXEC_RAM) {
+    return { state: "ram-limited" };
+  }
 
   if (needs_grow) {
     // Server needs money — grow-heavy ratio with weaken to offset security
@@ -332,10 +419,14 @@ function launch_home_prep(ns, target_host, income_host, available_ram) {
     const weak_threads = Math.floor(prep_ram / RAM.PREP_WEAK);
     if (weak_threads > 0) ns.exec(WORKERS.PREP_WEAK, "home", weak_threads, target_host);
   }
+
+  return { state: "launched" };
 }
 
 function launch_remote_prep(ns, hostname, target_host, available_ram, income_host) {
-  if (available_ram < RAM.PREP_WEAK) return;
+  if (available_ram < RAM.PREP_WEAK) {
+    return { state: "ram-limited" };
+  }
 
   const needs_grow = target_needs_grow(ns, target_host);
   const has_income = income_host && income_host !== target_host;
@@ -348,7 +439,9 @@ function launch_remote_prep(ns, hostname, target_host, available_ram, income_hos
   }
 
   const prep_ram = available_ram - income_ram;
-  if (prep_ram < RAM.PREP_WEAK) return;
+  if (prep_ram < RAM.PREP_WEAK) {
+    return { state: "ram-limited" };
+  }
 
   if (needs_grow) {
     // Server needs money — grow-heavy ratio with weaken to offset security
@@ -368,6 +461,8 @@ function launch_remote_prep(ns, hostname, target_host, available_ram, income_hos
     const weak_threads = Math.floor(prep_ram / RAM.PREP_WEAK);
     if (weak_threads > 0) ns.exec(WORKERS.PREP_WEAK, hostname, weak_threads, target_host);
   }
+
+  return { state: "launched" };
 }
 
 function ensure_local_worker_scripts(ns) {
@@ -420,20 +515,33 @@ function launch_batches_for_target(ns, target, hosts, options) {
   let launched = 0;
   const window_end = Date.now() + options.scheduleAheadMs;
   const template = calculate_batch_template(ns, target, options);
-  if (!template) return launched;
+  if (!template) {
+    return { target: target.hostname, launched, reason: "no-template" };
+  }
   if (!batch_schedule[target.hostname]) batch_schedule[target.hostname] = [];
+  let reason = "no-capacity";
 
   for (let i = 0; i < options.batchesPerWindow; i++) {
     const landing_time = find_next_available_window(target.hostname, options.spacingMs);
-    if (landing_time > window_end) continue;
+    if (landing_time > window_end) {
+      reason = "window-full";
+      continue;
+    }
 
     const jobs = build_batch_jobs(template, target.hostname, landing_time, options.spacingMs);
 
     const plan = plan_job_allocations(jobs, hosts);
-    if (!plan) break;
+    if (!plan) {
+      reason = "no-capacity";
+      break;
+    }
 
     const launched_ok = execute_planned_jobs(ns, jobs, hosts, plan);
-    if (!launched_ok) { cycle_failed_execs += 1; break; }
+    if (!launched_ok) {
+      cycle_failed_execs += 1;
+      reason = "exec-failed";
+      break;
+    }
 
     batch_schedule[target.hostname].push(
       landing_time - options.spacingMs,
@@ -442,9 +550,10 @@ function launch_batches_for_target(ns, target, hosts, options) {
       landing_time + 2 * options.spacingMs
     );
     launched += 1;
+    reason = launched >= options.batchesPerWindow ? "launched" : "partial";
   }
 
-  return launched;
+  return { target: target.hostname, launched, reason };
 }
 
 function find_next_available_window(target, spacing_ms) {
@@ -623,6 +732,57 @@ function pick_prep_income_target(ns, hack_targets) {
   }
   // No suitable income target — caller will skip income workers entirely
   return "";
+}
+
+function capture_prep_host_diag(ns, diag, hostname, action, expected_count, available_ram = null) {
+  const prep_procs = ns.ps(hostname).filter((p) => is_prep_script(p.filename));
+  let hack_threads = 0;
+  let grow_threads = 0;
+  let weak_threads = 0;
+  for (const proc of prep_procs) {
+    const script = String(proc.filename || "");
+    if (script.endsWith("w-hack.js") || script === "w-hack.js") hack_threads += Number(proc.threads) || 0;
+    if (script.endsWith("w-grow.js") || script === "w-grow.js") grow_threads += Number(proc.threads) || 0;
+    if (script.endsWith("w-weak.js") || script === "w-weak.js") weak_threads += Number(proc.threads) || 0;
+  }
+
+  diag.totalHackThreads += hack_threads;
+  diag.totalGrowThreads += grow_threads;
+  diag.totalWeakThreads += weak_threads;
+  if (action === "ram-limited") {
+    diag.ramLimitedHosts += 1;
+  }
+  if (diag.hosts.length < MAX_DIAG_HOSTS) {
+    diag.hosts.push({
+      hostname,
+      action,
+      expectedScripts: expected_count,
+      actualScripts: prep_procs.length,
+      availableRam: available_ram === null ? null : Math.floor(available_ram),
+      hackThreads: hack_threads,
+      growThreads: grow_threads,
+      weakThreads: weak_threads,
+    });
+  }
+}
+
+function build_batch_diag(hack_targets, batch_results, launched_batches, failed_execs, runnable_hosts, hosts, available_ram) {
+  const blockedTargets = batch_results.filter((result) => result.reason !== "launched" && result.reason !== "partial").length;
+  let state = "idle";
+  if (hack_targets.length > 0) {
+    state = launched_batches > 0 ? (blockedTargets > 0 ? "partial" : "running") : "blocked";
+  }
+  return {
+    state,
+    hackTargetCount: hack_targets.length,
+    launchedBatches: launched_batches,
+    blockedTargets,
+    failedExecs: failed_execs,
+    runnableHostCount: runnable_hosts.length,
+    hostCount: hosts.length,
+    availableRam: Math.floor(available_ram),
+    targets: batch_results.slice(0, MAX_DIAG_TARGETS),
+  };
 }
 
 async function write_manager_status(ns, status, now = Date.now()) {
