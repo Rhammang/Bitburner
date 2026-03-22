@@ -53,6 +53,13 @@ let cached_income_target = ""; // stable income target across cycles (prevents o
 const MAX_DIAG_HOSTS = 8;
 const MAX_DIAG_TARGETS = 8;
 
+// Money-delta income tracking — ns.getScriptIncome() only counts running
+// scripts, so fire-and-forget batch workers are invisible. Track player
+// money changes for a reliable income rate.
+let prev_money = -1;
+let prev_money_time = 0;
+let money_delta_income = 0; // EMA-smoothed $/sec
+
 export function autocomplete(data, args) {
   data.flags(argsSchema);
   return [];
@@ -77,6 +84,16 @@ export async function main(ns) {
     const cycle_start = Date.now();
     ensure_local_worker_scripts(ns);
     const player = ns.getPlayer();
+
+    // Update money-delta income tracker
+    if (prev_money >= 0 && cycle_start > prev_money_time) {
+      const dt = (cycle_start - prev_money_time) / 1000;
+      const raw = (player.money - prev_money) / dt;
+      if (raw >= 0) money_delta_income = money_delta_income === 0 ? raw : 0.15 * raw + 0.85 * money_delta_income;
+    }
+    prev_money = player.money;
+    prev_money_time = cycle_start;
+
     const server_map = build_server_map(ns, player);
     await write_server_map_if_needed(ns, server_map, cycle_start);
 
@@ -803,7 +820,7 @@ function build_batch_diag(hack_targets, batch_results, launched_batches, failed_
 }
 
 function compute_derived_metrics(ns, hosts, runnable_hosts, hack_targets, launched_batches, failed_execs, batch_results, prepDiag, options) {
-  const income = ns.getScriptIncome()[0];
+  const income = money_delta_income;
 
   // RAM totals
   let totalUsedRam = 0;

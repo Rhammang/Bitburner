@@ -247,9 +247,10 @@ export async function main(ns) {
   // ── 9. Batch Efficiency ─────────────────────────────────
   ns.tprint(`${thin}`);
   ns.tprint("▸ BATCH EFFICIENCY");
-  const income = ns.getScriptIncome();
-  ns.tprint(`  Current income: $${fmt_money(income[0])}/sec`);
-  ns.tprint(`  Since aug:      $${fmt_money(income[1])}/sec avg`);
+  const scriptIncome = ns.getScriptIncome();
+  const mgrIncome = mgr?.derivedMetrics?.income || 0;
+  ns.tprint(`  Income (money-Δ): $${fmt_money(mgrIncome)}/sec`);
+  ns.tprint(`  Income (script):  $${fmt_money(scriptIncome[0])}/sec  (only counts running scripts)`);
   if (mgr && mgr.batchDiag) {
     const bd = mgr.batchDiag;
     ns.tprint(`  Skipped templates: ${bd.skippedTemplates || 0} (targets with non-finite analysis)`);
@@ -372,7 +373,7 @@ function build_json_snapshot(ns) {
     managerStatus: mgr,
     derivedMetrics: mgr?.derivedMetrics || null,
     serverMap: read_json(ns, SERVER_MAP_FILE, []),
-    income: { perSec: ns.getScriptIncome()[0], sinceAug: ns.getScriptIncome()[1] },
+    income: { moneyDelta: mgr?.derivedMetrics?.income || 0, scriptApi: ns.getScriptIncome()[0] },
     stocks: parse_stocks_status(ns),
     ram: {
       homeMax: ns.getServerMaxRam("home"),

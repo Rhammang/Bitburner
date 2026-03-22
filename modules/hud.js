@@ -38,6 +38,14 @@ let modeSwitchCount = 0;
 let modeSwitchWindowStart = 0;
 let smoothedIncome = 0;
 
+// ── Money-delta income tracking ─────────────────────────────────────
+// ns.getScriptIncome() only counts RUNNING scripts. Fire-and-forget
+// batch workers exit after hack(), so their income is never visible.
+// Track player money changes instead for a reliable income rate.
+let prevMoney = -1;
+let prevMoneyTime = 0;
+let moneyDeltaIncome = 0; // EMA-smoothed $/sec
+
 /**
  * @typedef {{state?: string, pid?: number, freeRam?: number, neededRam?: number, bootReserve?: number}} RuntimeModuleState
  * @typedef {{rootReady?: boolean, managerReady?: boolean}} BootState
@@ -116,9 +124,19 @@ export async function main(ns) {
     left.push("Modules");
     right.push(`${enabled_count}/${rows.length} enabled`);
 
-    // ── Income + RAM ──────────────────────────────────────────
+    // ── Income (money-delta tracking) ─────────────────────────
+    const curMoney = ns.getPlayer().money;
+    const curTime = Date.now();
+    if (prevMoney >= 0 && curTime > prevMoneyTime) {
+      const dt = (curTime - prevMoneyTime) / 1000;
+      const raw = (curMoney - prevMoney) / dt;
+      // EMA smooth (α=0.15) — ignore negative spikes from purchases
+      if (raw >= 0) moneyDeltaIncome = moneyDeltaIncome === 0 ? raw : 0.15 * raw + 0.85 * moneyDeltaIncome;
+    }
+    prevMoney = curMoney;
+    prevMoneyTime = curTime;
     left.push("Income");
-    right.push(fmt_income(ns.getScriptIncome()[0]));
+    right.push(fmt_income(moneyDeltaIncome));
     left.push("RAM");
     right.push(`h:${ram.homeUsed.toFixed(0)}/${ram.homeMax.toFixed(0)}GB t:${fmt_ram(ram.totalUsed)}/${fmt_ram(ram.totalMax)}`);
 
