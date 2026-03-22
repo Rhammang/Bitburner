@@ -19,6 +19,7 @@ import {
   WORKERS,
   build_script_target_counts,
   is_prep_worker,
+  load_config,
   script_target_counts_equal,
 } from "/modules/runtime-contracts.js";
 
@@ -156,15 +157,16 @@ export async function main(ns) {
 }
 
 function get_options(ns) {
+  const cfg = load_config(ns).manager;
   const flags = ns.flags(argsSchema);
   return {
-    homeReserve: Math.max(0, Number(flags["home-reserve"]) || 0),
-    spacingMs: Math.max(50, Number(flags.spacing) || 200),
-    batchesPerWindow: Math.max(1, Math.floor(Number(flags["batches-per-window"]) || 5)),
-    scheduleAheadMs: Math.max(1000, Number(flags["schedule-ahead-time"]) || 20000),
-    loopSleepMs: Math.max(200, Number(flags["loop-sleep"]) || 1000),
-    prepSleepMs: Math.max(200, Number(flags["prep-sleep"]) || 2000),
-    hackPercent: clamp(Number(flags["hack-percent"]) || 0.15, 0.01, 0.9),
+    homeReserve: Math.max(0, Number(flags["home-reserve"]) || cfg.homeReserve),
+    spacingMs: Math.max(50, Number(flags.spacing) || cfg.spacing),
+    batchesPerWindow: Math.max(1, Math.floor(Number(flags["batches-per-window"]) || cfg.batchesPerWindow)),
+    scheduleAheadMs: Math.max(1000, Number(flags["schedule-ahead-time"]) || cfg.scheduleAheadTime),
+    loopSleepMs: Math.max(200, Number(flags["loop-sleep"]) || cfg.loopSleep),
+    prepSleepMs: Math.max(200, Number(flags["prep-sleep"]) || cfg.prepSleep),
+    hackPercent: clamp(Number(flags["hack-percent"]) || cfg.hackPercent, 0.01, 0.9),
     verbose: Boolean(flags.verbose),
   };
 }
@@ -567,9 +569,15 @@ function calculate_batch_template(ns, target, options) {
   const hack_percent = options.hackPercent;
   const money_to_hack = target.maxMoney * hack_percent;
 
-  const hack_threads = safe_threads(Math.floor(ns.hackAnalyzeThreads(target.hostname, money_to_hack)));
+  const raw_hack = ns.hackAnalyzeThreads(target.hostname, money_to_hack);
+  const raw_grow = ns.growthAnalyze(target.hostname, 1 / (1 - hack_percent));
+  if (!Number.isFinite(raw_hack) || !Number.isFinite(raw_grow) || raw_hack <= 0 || raw_grow <= 0) {
+    return null;
+  }
+
+  const hack_threads = safe_threads(Math.floor(raw_hack));
   const weak1_threads = safe_threads(Math.ceil(ns.hackAnalyzeSecurity(hack_threads) / 0.05));
-  const grow_threads = safe_threads(Math.ceil(ns.growthAnalyze(target.hostname, 1 / (1 - hack_percent))));
+  const grow_threads = safe_threads(Math.ceil(raw_grow));
   const weak2_threads = safe_threads(Math.ceil(ns.growthAnalyzeSecurity(grow_threads) / 0.05));
 
   const weaken_time = ns.getWeakenTime(target.hostname);
@@ -768,6 +776,7 @@ function capture_prep_host_diag(ns, diag, hostname, action, expected_count, avai
 
 function build_batch_diag(hack_targets, batch_results, launched_batches, failed_execs, runnable_hosts, hosts, available_ram) {
   const blockedTargets = batch_results.filter((result) => result.reason !== "launched" && result.reason !== "partial").length;
+  const skippedTemplates = batch_results.filter((result) => result.reason === "no-template").length;
   let state = "idle";
   if (hack_targets.length > 0) {
     state = launched_batches > 0 ? (blockedTargets > 0 ? "partial" : "running") : "blocked";
@@ -777,6 +786,7 @@ function build_batch_diag(hack_targets, batch_results, launched_batches, failed_
     hackTargetCount: hack_targets.length,
     launchedBatches: launched_batches,
     blockedTargets,
+    skippedTemplates,
     failedExecs: failed_execs,
     runnableHostCount: runnable_hosts.length,
     hostCount: hosts.length,

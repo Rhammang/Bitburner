@@ -1,14 +1,7 @@
 import {
-  BUY_SERVERS_BUDGET_FRACTION,
   BUY_SERVERS_LOOP_MS,
-  BUY_SERVERS_MIN_RAM,
-  BUY_SERVERS_SERVER_PREFIX,
+  load_config,
 } from "/modules/runtime-contracts.js";
-
-const LOOP_MS = BUY_SERVERS_LOOP_MS;
-const SERVER_PREFIX = BUY_SERVERS_SERVER_PREFIX;
-const MIN_RAM = BUY_SERVERS_MIN_RAM;
-const BUDGET_FRACTION = BUY_SERVERS_BUDGET_FRACTION;
 
 /** @param {NS} ns */
 export async function main(ns) {
@@ -16,28 +9,29 @@ export async function main(ns) {
 
   while (true) {
     try_buy_server(ns);
-    await ns.sleep(LOOP_MS);
+    await ns.sleep(BUY_SERVERS_LOOP_MS);
   }
 }
 
 function try_buy_server(ns) {
+  const cfg = load_config(ns).buyServers;
   const purchased = ns.getPurchasedServers();
   const limit = ns.getPurchasedServerLimit();
   const money = ns.getServerMoneyAvailable("home");
-  const budget = money * BUDGET_FRACTION;
+  const budget = money * cfg.budgetFraction;
   const max_ram = ns.getPurchasedServerMaxRam();
 
   if (purchased.length < limit) {
     let best_ram = 0;
-    for (let ram = MIN_RAM; ram <= max_ram; ram *= 2) {
+    for (let ram = cfg.minRam; ram <= max_ram; ram *= 2) {
       if (ns.getPurchasedServerCost(ram) <= budget) {
         best_ram = ram;
       } else {
         break;
       }
     }
-    if (best_ram < MIN_RAM) return;
-    const new_name = `${SERVER_PREFIX}${purchased.length}`;
+    if (best_ram < cfg.minRam) return;
+    const new_name = `${cfg.serverPrefix}${purchased.length}`;
     const result = ns.purchaseServer(new_name, best_ram);
     if (result) {
       ns.tprint(`BUY-SERVERS: purchased ${result} (${best_ram}GB)`);

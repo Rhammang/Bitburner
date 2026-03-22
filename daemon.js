@@ -11,8 +11,6 @@
 
 import {
   CORE_MODULES,
-  DAEMON_LOOP_MS,
-  DAEMON_WARN_THROTTLE_MS,
   DISABLED_PREFIX,
   LITE_BOOT_MODULES,
   MANAGER_MODULE_FILE,
@@ -21,15 +19,17 @@ import {
   MODULE_STATUS_FILE,
   ROOT_MODULE_FILE,
   WORKER_SOURCES,
+  load_config,
 } from "/modules/runtime-contracts.js";
-
-const LOOP_MS = DAEMON_LOOP_MS;
-const WARN_THROTTLE_MS = DAEMON_WARN_THROTTLE_MS;
 
 /** @param {NS} ns */
 export async function main(ns) {
   ns.disableLog("ALL");
   ns.tprint("DAEMON v5.1: Starting up...");
+
+  const cfg = load_config(ns).daemon;
+  const LOOP_MS = cfg.loopMs;
+  const WARN_THROTTLE_MS = cfg.warnThrottleMs;
 
   // Write the essential worker scripts to disk.
   writeWorkerScripts(ns);
@@ -55,7 +55,7 @@ export async function main(ns) {
     const boot_complete = boot.rootReady && boot.managerReady;
 
     if (!boot_complete) {
-      run_lite_boot_modules(ns, now, last_lite_run, last_warn, status, boot);
+      run_lite_boot_modules(ns, now, last_lite_run, last_warn, status, boot, WARN_THROTTLE_MS);
     } else {
       for (const lite of LITE_BOOT_MODULES) {
         if (status[lite.file]?.state !== "standby") {
@@ -82,7 +82,8 @@ export async function main(ns) {
           last_warn,
           `missing:${mod.file}`,
           `WARN: Core module ${scriptPath} not found!`,
-          now
+          now,
+          WARN_THROTTLE_MS
         );
         continue;
       }
@@ -126,7 +127,8 @@ export async function main(ns) {
             last_warn,
             `exec-failed:${mod.file}`,
             `ERROR: Failed to launch ${mod.file}. Not enough RAM?`,
-            now
+            now,
+            WARN_THROTTLE_MS
           );
           status[mod.file] = { state: "exec-failed" };
         }
@@ -184,7 +186,7 @@ function get_boot_reserve(ns, boot) {
   return reserve;
 }
 
-function run_lite_boot_modules(ns, now, last_lite_run, last_warn, status, boot) {
+function run_lite_boot_modules(ns, now, last_lite_run, last_warn, status, boot, WARN_THROTTLE_MS) {
   for (const lite of LITE_BOOT_MODULES) {
     const protecting_root = lite.protects === MODULE_FILES.ROOT;
     const protecting_manager = lite.protects === MODULE_FILES.MANAGER;
@@ -223,14 +225,15 @@ function run_lite_boot_modules(ns, now, last_lite_run, last_warn, status, boot) 
         last_warn,
         `lite-exec:${lite.file}`,
         `WARN: Failed to launch ${lite.file}`,
-        now
+        now,
+        WARN_THROTTLE_MS
       );
     }
   }
 }
 
-function warn_throttled(ns, last_warn, key, message, now) {
-  if (!last_warn[key] || now - last_warn[key] >= WARN_THROTTLE_MS) {
+function warn_throttled(ns, last_warn, key, message, now, throttle_ms) {
+  if (!last_warn[key] || now - last_warn[key] >= throttle_ms) {
     ns.tprint(message);
     last_warn[key] = now;
   }

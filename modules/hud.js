@@ -16,6 +16,7 @@ import {
   ROOTED_FILE,
   SERVER_MAP_FILE,
   SERVERS_FILE,
+  STOCKS_STATUS_FILE,
   TARGETS_FILE,
   get_worker_kind,
 } from "/modules/runtime-contracts.js";
@@ -199,6 +200,7 @@ function read_metrics(ns) {
     targets: count_lines(ns, TARGETS_FILE),
     prepped: count_lines(ns, PREPPED_FILE),
     contracts: count_lines(ns, CONTRACTS_FILE),
+    stocks: read_stocks_status(ns),
     purchased: ns.getPurchasedServers().length,
     purchasedLimit: ns.getPurchasedServerLimit(),
   };
@@ -263,6 +265,23 @@ function effectiveness_text(file, state, manager, metrics, refresh_ms, boot_read
     return `${metrics.contracts} found`;
   }
 
+  if (file === "stocks.js") {
+    const ss = metrics.stocks;
+    if (!ss.state) return "idle";
+    if (ss.state === "waiting-tix" || ss.state === "waiting-4s") return ss.state;
+    if (ss.state === "active") {
+      const p = ss.profit || 0;
+      const sign = p >= 0 ? "+" : "";
+      const abs = Math.abs(p);
+      const fmt = abs >= 1e9 ? `${(abs / 1e9).toFixed(1)}b`
+        : abs >= 1e6 ? `${(abs / 1e6).toFixed(1)}m`
+        : abs >= 1e3 ? `${(abs / 1e3).toFixed(0)}k`
+        : abs.toFixed(0);
+      return `${ss.positions}pos ${sign}$${fmt}`;
+    }
+    return ss.state;
+  }
+
   if (file === "hud.js") {
     return `${refresh_ms}ms refresh`;
   }
@@ -319,6 +338,19 @@ function count_lines(ns, path) {
   const raw = ns.read(path).trim();
   if (!raw) return 0;
   return raw.split(/\r?\n/).filter(Boolean).length;
+}
+
+function read_stocks_status(ns) {
+  const raw = ns.read(STOCKS_STATUS_FILE).trim();
+  if (!raw) return {};
+  const pipe = raw.indexOf("|");
+  if (pipe < 0) return { state: raw };
+  const state = raw.substring(0, pipe);
+  try {
+    return { state, ...JSON.parse(raw.substring(pipe + 1)) };
+  } catch {
+    return { state };
+  }
 }
 
 function short_time(iso) {

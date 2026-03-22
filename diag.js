@@ -17,6 +17,7 @@ import {
   PREP_WORKER_FILES,
   ROOTED_FILE,
   SERVER_MAP_FILE,
+  STOCKS_STATUS_FILE,
   TARGETS_FILE,
   WORKER_FILES,
   normalize_script_filename,
@@ -27,12 +28,20 @@ const PREP_SCRIPTS = new Set(PREP_WORKER_FILES);
 const BATCH_SCRIPTS = new Set(BATCH_WORKER_FILES);
 
 export function autocomplete() {
-  return ["--tail"];
+  return ["--tail", "--json"];
 }
 
 /** @param {NS} ns */
 export async function main(ns) {
   ns.disableLog("ALL");
+  const json_mode = ns.args.includes("--json");
+
+  if (json_mode) {
+    const data = build_json_snapshot(ns);
+    ns.tprint(JSON.stringify(data, null, 2));
+    return;
+  }
+
   const sep = "═".repeat(60);
   const thin = "─".repeat(60);
 
@@ -216,6 +225,7 @@ export async function main(ns) {
     TARGETS_FILE,
     PREPPED_FILE,
     CONTRACTS_FILE,
+    STOCKS_STATUS_FILE,
   ];
   for (const f of data_files) {
     const exists = ns.fileExists(f, "home");
@@ -233,9 +243,76 @@ export async function main(ns) {
     ns.tprint(`  ${pad(ws, 16)} ${exists ? "✓ present" : "✗ MISSING"}`);
   }
 
+  // ── 9. Batch Efficiency ─────────────────────────────────
+  ns.tprint(`${thin}`);
+  ns.tprint("▸ BATCH EFFICIENCY");
+  const income = ns.getScriptIncome();
+  ns.tprint(`  Current income: $${fmt_money(income[0])}/sec`);
+  ns.tprint(`  Since aug:      $${fmt_money(income[1])}/sec avg`);
+  if (mgr && mgr.batchDiag) {
+    const bd = mgr.batchDiag;
+    ns.tprint(`  Skipped templates: ${bd.skippedTemplates || 0} (targets with non-finite analysis)`);
+    ns.tprint(`  Failed execs: ${bd.failedExecs || 0}`);
+  }
+
+  // ── 10. Stocks Status ──────────────────────────────────
+  ns.tprint(`${thin}`);
+  ns.tprint("▸ STOCKS");
+  const stocks_raw = ns.read(STOCKS_STATUS_FILE).trim();
+  if (!stocks_raw) {
+    ns.tprint("  No stocks status file");
+  } else {
+    const pipe = stocks_raw.indexOf("|");
+    const stocks_state = pipe > 0 ? stocks_raw.substring(0, pipe) : stocks_raw;
+    ns.tprint(`  State: ${stocks_state}`);
+    if (pipe > 0) {
+      try {
+        const sd = JSON.parse(stocks_raw.substring(pipe + 1));
+        ns.tprint(`  Positions: ${sd.positions || 0}  Value: $${fmt_money(sd.value || 0)}`);
+        ns.tprint(`  Realized: $${fmt_money(sd.realizedProfit || 0)}  Unrealized: $${fmt_money(sd.unrealizedProfit || 0)}  Total: $${fmt_money(sd.profit || 0)}`);
+      } catch { /* ignore parse errors */ }
+    }
+  }
+
   ns.tprint(`${sep}`);
   ns.tprint("  END DIAGNOSTICS");
   ns.tprint(`${sep}`);
+}
+
+function build_json_snapshot(ns) {
+  return {
+    timestamp: new Date().toISOString(),
+    moduleStatus: read_json(ns, MODULE_STATUS_FILE, null),
+    managerStatus: read_json(ns, MANAGER_STATUS_FILE, null),
+    serverMap: read_json(ns, SERVER_MAP_FILE, []),
+    income: { perSec: ns.getScriptIncome()[0], sinceAug: ns.getScriptIncome()[1] },
+    stocks: parse_stocks_status(ns),
+    ram: {
+      homeMax: ns.getServerMaxRam("home"),
+      homeUsed: ns.getServerUsedRam("home"),
+      purchasedServers: ns.getPurchasedServers().map((s) => ({
+        hostname: s,
+        max: ns.getServerMaxRam(s),
+        used: ns.getServerUsedRam(s),
+      })),
+    },
+    dataFiles: [MODULE_STATUS_FILE, MANAGER_STATUS_FILE, SERVER_MAP_FILE,
+      ROOTED_FILE, TARGETS_FILE, PREPPED_FILE, CONTRACTS_FILE, STOCKS_STATUS_FILE]
+      .map((f) => ({ path: f, exists: ns.fileExists(f, "home"), size: ns.read(f).length })),
+    workerScripts: WORKER_FILES.map((w) => ({ path: w, exists: ns.fileExists(w, "home") })),
+  };
+}
+
+function parse_stocks_status(ns) {
+  const raw = ns.read(STOCKS_STATUS_FILE).trim();
+  if (!raw) return null;
+  const pipe = raw.indexOf("|");
+  if (pipe < 0) return { state: raw };
+  try {
+    return { state: raw.substring(0, pipe), ...JSON.parse(raw.substring(pipe + 1)) };
+  } catch {
+    return { state: raw.substring(0, pipe) };
+  }
 }
 
 function read_json(ns, path, fallback) {

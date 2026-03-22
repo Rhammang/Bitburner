@@ -18,6 +18,7 @@ export const MODULE_FILES = {
   HUD: "hud.js",
   BUY_SERVERS: "buy-servers.js",
   CONTRACTS: "contracts.js",
+  STOCKS: "stocks.js",
   ROOT_LITE: "root-lite.js",
   DEPLOY_LITE: "deploy-lite.js",
 };
@@ -27,6 +28,7 @@ export const MANAGER_MODULE_FILE = `${MODULES_DIR}${MODULE_FILES.MANAGER}`;
 export const HUD_MODULE_FILE = `${MODULES_DIR}${MODULE_FILES.HUD}`;
 export const BUY_SERVERS_MODULE_FILE = `${MODULES_DIR}${MODULE_FILES.BUY_SERVERS}`;
 export const CONTRACTS_MODULE_FILE = `${MODULES_DIR}${MODULE_FILES.CONTRACTS}`;
+export const STOCKS_MODULE_FILE = `${MODULES_DIR}${MODULE_FILES.STOCKS}`;
 export const ROOT_LITE_MODULE_FILE = `${MODULES_DIR}${MODULE_FILES.ROOT_LITE}`;
 export const DEPLOY_LITE_MODULE_FILE = `${MODULES_DIR}${MODULE_FILES.DEPLOY_LITE}`;
 
@@ -69,11 +71,11 @@ export const WORKER_RAM_COSTS = {
 
 export const WORKER_SOURCES = {
   [WORKERS.PREP_WEAK]:
-    "export async function main(ns) { while (true) { await ns.weaken(ns.args[0]); } }",
+    "export async function main(ns) { const t = ns.args[0]; while (true) { if (!ns.serverExists(t)) return; await ns.weaken(t); } }",
   [WORKERS.PREP_GROW]:
-    "export async function main(ns) { while (true) { await ns.grow(ns.args[0]); } }",
+    "export async function main(ns) { const t = ns.args[0]; while (true) { if (!ns.serverExists(t)) return; await ns.grow(t); } }",
   [WORKERS.PREP_HACK]:
-    "export async function main(ns) { while (true) { await ns.hack(ns.args[0]); } }",
+    "export async function main(ns) { const t = ns.args[0]; while (true) { if (!ns.serverExists(t)) return; await ns.hack(t); } }",
   [WORKERS.HACK]:
     "export async function main(ns) { if (ns.args[1] > 0) await ns.sleep(ns.args[1]); await ns.hack(ns.args[0]); }",
   [WORKERS.WEAK]:
@@ -92,6 +94,7 @@ export const CORE_MODULES = [
   { file: MODULE_FILES.HUD, desc: "Runtime HUD", interval: 10000, bootCritical: false },
   { file: MODULE_FILES.BUY_SERVERS, desc: "Server Purchase Manager", interval: 20000, bootCritical: false },
   { file: MODULE_FILES.CONTRACTS, desc: "Contract Solver", interval: 60000, bootCritical: false },
+  { file: MODULE_FILES.STOCKS, desc: "Stock Trader", interval: 30000, bootCritical: false },
 ];
 
 export const LITE_BOOT_MODULES = [
@@ -105,6 +108,7 @@ export const MODULE_ROWS = [
   { file: MODULE_FILES.HUD, label: "HUD" },
   { file: MODULE_FILES.BUY_SERVERS, label: "Servers" },
   { file: MODULE_FILES.CONTRACTS, label: "Contracts" },
+  { file: MODULE_FILES.STOCKS, label: "Stocks" },
 ];
 
 export const LITE_ROWS = [
@@ -140,6 +144,50 @@ export const MANAGER_SERVER_MAP_WRITE_INTERVAL_MS = 5000;
 export const MANAGER_STATUS_WRITE_INTERVAL_MS = 5000;
 export const MANAGER_MIN_EXEC_RAM = WORKER_RAM_COSTS.HACK;
 export const MANAGER_MIN_INCOME_RAM = 32;
+
+export const CONFIG_FILE = `${DATA_DIR}config.json`;
+
+const CONFIG_DEFAULTS = {
+  manager: {
+    homeReserve: MANAGER_HOME_RESERVE_DEFAULT,
+    spacing: MANAGER_SPACING_MS_DEFAULT,
+    batchesPerWindow: MANAGER_BATCHES_PER_WINDOW_DEFAULT,
+    scheduleAheadTime: MANAGER_SCHEDULE_AHEAD_MS_DEFAULT,
+    loopSleep: MANAGER_LOOP_SLEEP_MS_DEFAULT,
+    prepSleep: MANAGER_PREP_SLEEP_MS_DEFAULT,
+    hackPercent: MANAGER_HACK_PERCENT_DEFAULT,
+  },
+  buyServers: {
+    budgetFraction: BUY_SERVERS_BUDGET_FRACTION,
+    minRam: BUY_SERVERS_MIN_RAM,
+    serverPrefix: BUY_SERVERS_SERVER_PREFIX,
+  },
+  daemon: {
+    loopMs: DAEMON_LOOP_MS,
+    warnThrottleMs: DAEMON_WARN_THROTTLE_MS,
+  },
+};
+
+/**
+ * Loads config from /data/config.json merged with hardcoded defaults.
+ * Missing file or malformed JSON silently falls back to defaults.
+ * @param {NS} ns
+ * @returns {typeof CONFIG_DEFAULTS}
+ */
+export function load_config(ns) {
+  try {
+    const raw = ns.read(CONFIG_FILE);
+    if (!raw || !raw.trim()) return structuredClone(CONFIG_DEFAULTS);
+    const user = JSON.parse(raw);
+    return {
+      manager: { ...CONFIG_DEFAULTS.manager, ...user.manager },
+      buyServers: { ...CONFIG_DEFAULTS.buyServers, ...user.buyServers },
+      daemon: { ...CONFIG_DEFAULTS.daemon, ...user.daemon },
+    };
+  } catch {
+    return structuredClone(CONFIG_DEFAULTS);
+  }
+}
 
 export function normalize_script_filename(filename) {
   const value = String(filename || "").trim();
