@@ -12,6 +12,7 @@ import {
   BATCH_WORKER_FILES,
   CONTRACTS_STATUS_FILE,
   MANAGER_STATUS_FILE,
+  METRICS_THRESHOLDS,
   MODULE_STATUS_FILE,
   PREPPED_FILE,
   PREP_WORKER_FILES,
@@ -28,7 +29,7 @@ const PREP_SCRIPTS = new Set(PREP_WORKER_FILES);
 const BATCH_SCRIPTS = new Set(BATCH_WORKER_FILES);
 
 export function autocomplete() {
-  return ["--tail", "--json"];
+  return ["--tail", "--json", "--control"];
 }
 
 /** @param {NS} ns */
@@ -255,7 +256,91 @@ export async function main(ns) {
     ns.tprint(`  Failed execs: ${bd.failedExecs || 0}`);
   }
 
-  // ── 10. Stocks Status ──────────────────────────────────
+  // ── 10. Derived Metrics ─────────────────────────────────
+  ns.tprint(`${thin}`);
+  ns.tprint("▸ DERIVED METRICS");
+  const dm = mgr?.derivedMetrics;
+  if (!dm) {
+    ns.tprint("  No derived metrics available (manager may need restart)");
+  } else {
+    ns.tprint("  EFFICIENCY");
+    ns.tprint(`    Income/GB:          ${fmt_income(dm.incomePerGB)}/GB`);
+    ns.tprint(`    Extraction Ratio:   ${pct(dm.extractionRatio)}     ${health_tag(dm.extractionRatio, METRICS_THRESHOLDS.extractionRatio)}  (actual/theoretical income)`);
+    ns.tprint(`    Weaken Tax:         ${pct(dm.weakenTax)}           (defensive thread overhead)`);
+
+    ns.tprint("  UTILIZATION");
+    ns.tprint(`    RAM:                ${pct(dm.ramUtilization)}     ${health_tag(dm.ramUtilization, METRICS_THRESHOLDS.ramUtilization)}`);
+    ns.tprint(`    Host Activation:    ${pct(dm.hostActivation)}`);
+    ns.tprint(`    Batch Slots:        ${pct(dm.batchSlotUtilization)}`);
+    ns.tprint(`    Target Coverage:    ${pct(dm.targetCoverage)}`);
+    ns.tprint(`    Host Fragmentation: ${pct(dm.hostFragmentation)}`);
+
+    ns.tprint("  HEALTH");
+    ns.tprint(`    Batch Success:      ${pct(dm.batchSuccessRate)}     ${health_tag(dm.batchSuccessRate, METRICS_THRESHOLDS.batchSuccessRate)}`);
+    ns.tprint(`    Exec Failures:      ${pct(dm.execFailureRatio)}     ${health_tag_inv(dm.execFailureRatio, METRICS_THRESHOLDS.execFailureRatio)}`);
+    ns.tprint(`    Prep Stability:     ${pct(dm.prepStability)}     ${health_tag(dm.prepStability, METRICS_THRESHOLDS.prepStability)}`);
+    ns.tprint(`    System Score:       ${score_letter(dm.systemScore)} (${(dm.systemScore * 100).toFixed(0)}%)`);
+
+    ns.tprint("  PER-TARGET HEALTH");
+    if (dm.perTarget && Object.keys(dm.perTarget).length > 0) {
+      for (const [hn, t] of Object.entries(dm.perTarget)) {
+        const drift_tag = t.securityDrift > METRICS_THRESHOLDS.securityDrift.warn ? "[WARN: drift]"
+          : t.securityDrift > METRICS_THRESHOLDS.securityDrift.good ? "[drift]" : "[OK]";
+        ns.tprint(`    ${pad(hn, 22)} secDrift:${t.securityDrift.toFixed(3)}  money:${pct(t.moneyRatio)}  batches:${t.liveBatches}  ${drift_tag}`);
+      }
+    } else {
+      ns.tprint("    No target data");
+    }
+
+    ns.tprint("  PROGRESS");
+    if (dm.prepETA !== null) {
+      ns.tprint(`    Prep ETA:           ${dm.prepETA === -1 ? "STALLED" : fmt_eta(dm.prepETA)}`);
+    }
+    ns.tprint(`    Threads:            H${dm.hackThreads} G${dm.growThreads} W${dm.weakThreads} (${dm.totalThreads} total)`);
+    ns.tprint(`    RAM:                ${fmt_ram(dm.totalUsedRam)} / ${fmt_ram(dm.totalMaxRam)} used`);
+  }
+
+  // ── 11. Control Analysis (--control flag) ───────────────
+  const show_control = ns.args.includes("--control");
+  if (show_control && dm) {
+    ns.tprint(`${thin}`);
+    ns.tprint("▸ CONTROL ANALYSIS");
+    ns.tprint("  (Note: Control metrics require HUD ring buffer; this is a point-in-time estimate)");
+
+    // Per-target damping estimate from current security data
+    if (dm.perTarget) {
+      ns.tprint("  STABILITY (per-target security state)");
+      for (const [hn, t] of Object.entries(dm.perTarget)) {
+        const drift = t.securityDrift;
+        let damping_label = "stable";
+        if (drift > 0.2) damping_label = "underdamped (high drift)";
+        else if (drift > 0.05) damping_label = "settling";
+        ns.tprint(`    ${pad(hn, 22)} drift:${drift.toFixed(3)}  state:${damping_label}`);
+      }
+    }
+
+    // Pipeline pressure estimate
+    if (mgr && mgr.batchDiag) {
+      const hackTargets = mgr.hackTargets || 0;
+      const bpw = 5; // default batchesPerWindow
+      const avgBatchRam = 1.7 * 4 + 1.75 * 8; // rough estimate per batch
+      const demand = hackTargets * bpw * avgBatchRam;
+      const supply = mgr.availableRam || 0;
+      const pressure = supply > 0 ? demand / supply : 0;
+      ns.tprint("  PIPELINE");
+      ns.tprint(`    Pressure index:     ${pressure.toFixed(2)}  (demand/supply, 0.5-1.5 healthy)`);
+      ns.tprint(`    Available RAM:      ${fmt_ram(supply)}`);
+      ns.tprint(`    Est. demand:        ${fmt_ram(demand)}  (${hackTargets} targets × ${bpw} batches)`);
+    }
+
+    // Income-RAM elasticity note
+    ns.tprint("  TRANSFER CHARACTERISTICS");
+    ns.tprint(`    Income/GB:          ${fmt_income(dm.incomePerGB)}/GB  (thread→money conversion proxy)`);
+    ns.tprint(`    Threads/$/s:        ${dm.income > 0 ? (dm.totalThreads / dm.income).toFixed(2) : "n/a"}  (lower = more efficient)`);
+    ns.tprint("  (Full frequency/damping analysis available in HUD after 2+ min of data)");
+  }
+
+  // ── 12. Stocks Status ──────────────────────────────────
   ns.tprint(`${thin}`);
   ns.tprint("▸ STOCKS");
   const stocks_raw = ns.read(STOCKS_STATUS_FILE).trim();
@@ -280,10 +365,12 @@ export async function main(ns) {
 }
 
 function build_json_snapshot(ns) {
+  const mgr = read_json(ns, MANAGER_STATUS_FILE, null);
   return {
     timestamp: new Date().toISOString(),
     moduleStatus: read_json(ns, MODULE_STATUS_FILE, null),
-    managerStatus: read_json(ns, MANAGER_STATUS_FILE, null),
+    managerStatus: mgr,
+    derivedMetrics: mgr?.derivedMetrics || null,
     serverMap: read_json(ns, SERVER_MAP_FILE, []),
     income: { perSec: ns.getScriptIncome()[0], sinceAug: ns.getScriptIncome()[1] },
     stocks: parse_stocks_status(ns),
@@ -350,4 +437,47 @@ function fmt_money(amount) {
   if (val >= 1e6) return `${(val / 1e6).toFixed(2)}m`;
   if (val >= 1e3) return `${(val / 1e3).toFixed(2)}k`;
   return val.toFixed(0);
+}
+
+function fmt_income(per_sec) {
+  const val = Number(per_sec);
+  if (!Number.isFinite(val) || val <= 0) return "$0/s";
+  if (val >= 1e12) return `$${(val / 1e12).toFixed(2)}t/s`;
+  if (val >= 1e9) return `$${(val / 1e9).toFixed(2)}b/s`;
+  if (val >= 1e6) return `$${(val / 1e6).toFixed(2)}m/s`;
+  if (val >= 1e3) return `$${(val / 1e3).toFixed(1)}k/s`;
+  return `$${val.toFixed(0)}/s`;
+}
+
+function fmt_eta(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return "stalled";
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}
+
+function pct(ratio) {
+  const val = Number(ratio);
+  if (!Number.isFinite(val)) return "n/a";
+  return `${Math.round(val * 100)}%`;
+}
+
+function health_tag(value, threshold) {
+  if (value >= threshold.good) return "[OK]";
+  if (value >= threshold.warn) return "[WARN]";
+  return "[CRIT]";
+}
+
+function health_tag_inv(value, threshold) {
+  if (value <= threshold.good) return "[OK]";
+  if (value <= threshold.warn) return "[WARN]";
+  return "[CRIT]";
+}
+
+function score_letter(score) {
+  if (score >= 0.9) return "A";
+  if (score >= 0.75) return "B";
+  if (score >= 0.6) return "C";
+  if (score >= 0.4) return "D";
+  return "F";
 }

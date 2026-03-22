@@ -9,6 +9,7 @@ import {
   CONTRACTS_STATUS_FILE,
   DISABLED_PREFIX,
   MANAGER_STATUS_FILE,
+  MetricsRing,
   MODULE_ROWS,
   MODULE_STATUS_FILE,
   LITE_ROWS,
@@ -29,6 +30,13 @@ const argsSchema = [
   ["show-disabled", true],
   ["target-rows", 3],
 ];
+
+// ── Metrics ring buffer (persists across HUD cycles) ────────────────
+const metricsHistory = new MetricsRing(120);
+let lastMode = "";
+let modeSwitchCount = 0;
+let modeSwitchWindowStart = 0;
+let smoothedIncome = 0;
 
 /**
  * @typedef {{state?: string, pid?: number, freeRam?: number, neededRam?: number, bootReserve?: number}} RuntimeModuleState
@@ -78,6 +86,12 @@ export async function main(ns) {
     const hwgw_live = collect_live_hwgw(ns);
     const prep_live = collect_live_prep(ns);
     const ram = collect_ram_summary(ns);
+
+    // ── Push derived metrics into ring buffer ─────────────────
+    const dm = manager_status.derivedMetrics || null;
+    push_metrics_snapshot(dm, manager_status.mode);
+    const trends = compute_trend_metrics();
+    const control = compute_control_metrics();
 
     const rows = show_lite ? MODULE_ROWS.concat(LITE_ROWS) : MODULE_ROWS.slice();
     const module_map = module_status.modules || {};
@@ -184,6 +198,27 @@ export async function main(ns) {
 
       left.push(`${row.label} ${short_state(state.state, enabled)}`);
       right.push(effectiveness_text(row.file, state, manager_status, metrics, refresh_ms, boot_ready));
+    }
+
+    // ── Derived metrics rows ────────────────────────────────
+    if (dm) {
+      left.push("Efficiency");
+      right.push(
+        `${fmt_income(dm.incomePerGB)}/GB ext:${Math.round(dm.extractionRatio * 100)}% ${score_letter(dm.systemScore)}`
+      );
+
+      left.push("Health");
+      const prepETAStr = dm.prepETA === null ? "" : dm.prepETA === -1 ? " prep:stall" : ` prep:${fmt_eta(dm.prepETA)}`;
+      right.push(
+        `suc:${Math.round(dm.batchSuccessRate * 100)}% ram:${Math.round(dm.ramUtilization * 100)}%${prepETAStr}`
+      );
+
+      if (trends) {
+        left.push("Trend");
+        right.push(
+          `inc:${fmt_income(trends.incomeTrend)}${trend_arrow(trends.incomeTrend)} jit:${trends.cycleJitter}ms mode:${trends.modeSwitches === 0 ? "stable" : trends.modeSwitches + "/m"}`
+        );
+      }
     }
 
     hook0.innerText = left.join("\n");
@@ -503,9 +538,188 @@ function fmt_income(per_sec) {
   return `$${val.toFixed(0)}/s`;
 }
 
+function fmt_eta(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return "stall";
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m${Math.round(seconds % 60)}s`;
+  return `${Math.floor(seconds / 3600)}h${Math.floor((seconds % 3600) / 60)}m`;
+}
+
 function fmt_ram(gb) {
   const val = Number(gb);
   if (!Number.isFinite(val)) return "0GB";
   if (val >= 1024) return `${(val / 1024).toFixed(1)}TB`;
   return `${val.toFixed(0)}GB`;
+}
+
+// ── Trend & control-theory metrics ──────────────────────────────────
+
+function push_metrics_snapshot(dm, mode) {
+  if (!dm) return;
+  const now = Date.now();
+
+  // Track mode switches
+  if (mode && mode !== lastMode && lastMode) {
+    modeSwitchCount++;
+    if (!modeSwitchWindowStart) modeSwitchWindowStart = now;
+  }
+  lastMode = mode || lastMode;
+  if (now - modeSwitchWindowStart > 60000) {
+    modeSwitchCount = 0;
+    modeSwitchWindowStart = now;
+  }
+
+  // EMA smoothed income
+  const alpha = 0.1;
+  const income = to_num(dm.income);
+  smoothedIncome = smoothedIncome === 0 ? income : alpha * income + (1 - alpha) * smoothedIncome;
+
+  metricsHistory.push({ ...dm, timestamp: now, smoothedIncome, mode });
+}
+
+function compute_trend_metrics() {
+  if (metricsHistory.length < 2) return null;
+  const cur = metricsHistory.latest();
+  const prev10 = metricsHistory.ago(10);
+  const prev = metricsHistory.ago(1);
+  if (!cur || !prev10) return null;
+
+  const incomeTrend = cur.smoothedIncome - (prev10?.smoothedIncome || cur.smoothedIncome);
+  const batchFailDelta = to_num(cur.execFailureRatio) - to_num(prev?.execFailureRatio);
+
+  // Prep velocity (for primary prep target)
+  let prepMoneyVel = 0;
+  let prepSecVel = 0;
+  if (cur.perTarget && prev?.perTarget) {
+    for (const hn of Object.keys(cur.perTarget)) {
+      const ct = cur.perTarget[hn];
+      const pt = prev.perTarget[hn];
+      if (pt && ct.moneyRatio < 0.99) {
+        prepMoneyVel = ct.moneyRatio - pt.moneyRatio;
+        prepSecVel = ct.securityDrift - pt.securityDrift;
+        break;
+      }
+    }
+  }
+
+  // Cycle jitter
+  const window = metricsHistory.window(20);
+  let jitter = 0;
+  if (window.length > 2) {
+    const deltas = [];
+    for (let i = 1; i < window.length; i++) {
+      deltas.push(window[i].timestamp - window[i - 1].timestamp);
+    }
+    const mean = deltas.reduce((a, b) => a + b, 0) / deltas.length;
+    const variance = deltas.reduce((a, d) => a + (d - mean) ** 2, 0) / deltas.length;
+    jitter = Math.sqrt(variance);
+  }
+
+  return {
+    incomeTrend,
+    batchFailDelta,
+    prepMoneyVel,
+    prepSecVel,
+    modeSwitches: modeSwitchCount,
+    cycleJitter: Math.round(jitter),
+  };
+}
+
+function compute_control_metrics() {
+  if (metricsHistory.length < 30) return null;
+  const result = {};
+
+  // Damping estimate per target
+  const cur = metricsHistory.latest();
+  if (cur?.perTarget) {
+    result.damping = {};
+    for (const hn of Object.keys(cur.perTarget)) {
+      result.damping[hn] = estimate_damping(hn);
+    }
+  }
+
+  // Income spectrum
+  result.spectrum = income_spectrum(64);
+
+  // Transfer gain estimate (Δincome / Δthreads over recent window)
+  const w = metricsHistory.window(20);
+  if (w.length >= 10) {
+    const first = w[0];
+    const last = w[w.length - 1];
+    const dIncome = to_num(last.income) - to_num(first.income);
+    const dThreads = to_num(last.totalThreads) - to_num(first.totalThreads);
+    result.transferGain = dThreads !== 0 ? dIncome / dThreads : null;
+  }
+
+  // Settling time: cycles since last mode change where securityDrift < 0.05 for all hack targets
+  const window = metricsHistory.window(60);
+  let lastModeChange = -1;
+  for (let i = 1; i < window.length; i++) {
+    if (window[i].mode !== window[i - 1].mode) lastModeChange = i;
+  }
+  if (lastModeChange >= 0 && window.length > lastModeChange) {
+    let settled = 0;
+    for (let i = lastModeChange; i < window.length; i++) {
+      const pt = window[i].perTarget || {};
+      const allSettled = Object.values(pt).every(
+        (t) => t.securityDrift < 0.05 && t.moneyRatio > 0.95
+      );
+      if (allSettled) { settled = i - lastModeChange; break; }
+    }
+    result.settlingCycles = settled > 0 ? settled : null;
+  }
+
+  return result;
+}
+
+function estimate_damping(target) {
+  const drifts = metricsHistory.window(30).map(
+    (s) => s.perTarget?.[target]?.securityDrift ?? 0
+  );
+  const peaks = [];
+  for (let i = 1; i < drifts.length - 1; i++) {
+    if (drifts[i] > drifts[i - 1] && drifts[i] > drifts[i + 1] && drifts[i] > 0.01) {
+      peaks.push(drifts[i]);
+    }
+  }
+  if (peaks.length < 2) return { label: "stable", ratio: 1.0 };
+  const decrement = Math.log(peaks[0] / peaks[1]);
+  const zeta = decrement / Math.sqrt(4 * Math.PI * Math.PI + decrement * decrement);
+  if (zeta > 0.9) return { label: "overdamped", ratio: Math.round(zeta * 100) / 100 };
+  if (zeta > 0.6) return { label: "critical", ratio: Math.round(zeta * 100) / 100 };
+  return { label: "underdamped", ratio: Math.round(zeta * 100) / 100 };
+}
+
+function income_spectrum(sample_count) {
+  const samples = metricsHistory.window(sample_count).map((s) => to_num(s.incomePerGB));
+  if (samples.length < sample_count) return null;
+  const N = samples.length;
+  let peakFreq = 0, peakMag = 0, totalMag = 0;
+  for (let k = 1; k <= N / 2; k++) {
+    let re = 0, im = 0;
+    for (let n = 0; n < N; n++) {
+      const angle = (2 * Math.PI * k * n) / N;
+      re += samples[n] * Math.cos(angle);
+      im -= samples[n] * Math.sin(angle);
+    }
+    const mag = Math.sqrt(re * re + im * im) / N;
+    totalMag += mag;
+    if (mag > peakMag) { peakMag = mag; peakFreq = k; }
+  }
+  const spread = totalMag > 0 ? 1 - (peakMag / totalMag) : 0;
+  return { peakFreq, peakMag: Math.round(peakMag * 100) / 100, spread: Math.round(spread * 100) / 100 };
+}
+
+function trend_arrow(value) {
+  if (value > 0.001) return "\u2191";  // ↑
+  if (value < -0.001) return "\u2193"; // ↓
+  return "\u2194";                     // ↔
+}
+
+function score_letter(score) {
+  if (score >= 0.9) return "A";
+  if (score >= 0.75) return "B";
+  if (score >= 0.6) return "C";
+  if (score >= 0.4) return "D";
+  return "F";
 }

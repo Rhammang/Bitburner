@@ -227,3 +227,43 @@ export function script_target_counts_equal(left, right) {
   }
   return true;
 }
+
+// ── Metrics infrastructure ──────────────────────────────────────────
+
+export const METRICS_RING_SIZE = 120;
+
+export class MetricsRing {
+  constructor(size = METRICS_RING_SIZE) {
+    this.size = size;
+    this.buf = [];
+    this.idx = 0;
+  }
+  push(v) {
+    if (this.buf.length < this.size) this.buf.push(v);
+    else this.buf[this.idx % this.size] = v;
+    this.idx++;
+  }
+  latest() {
+    return this.buf.length ? this.buf[(this.idx - 1) % this.size] : null;
+  }
+  ago(n) {
+    if (!this.buf.length) return null;
+    const i = Math.max(0, this.idx - 1 - n);
+    return this.buf[i % this.size];
+  }
+  window(n) {
+    return this.buf.slice(Math.max(0, this.buf.length - n));
+  }
+  get length() {
+    return this.buf.length;
+  }
+}
+
+export const METRICS_THRESHOLDS = {
+  extractionRatio: { good: 0.5, warn: 0.2 },
+  ramUtilization: { good: 0.7, warn: 0.5 },
+  batchSuccessRate: { good: 0.9, warn: 0.5 },
+  securityDrift: { good: 0.05, warn: 0.2 },
+  prepStability: { good: 0.8, warn: 0.5 },
+  execFailureRatio: { good: 0, warn: 0.01 },
+};

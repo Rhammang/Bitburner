@@ -98,14 +98,9 @@ progression automation without manual babysitting.
 
 ## Future Plans
 
-    - Add a config file for module intervals, RAM budgets, and feature toggles
-      (externalize constants from `runtime-contracts.js`).
-    - Expand `diag.js` with failure history, module health trends, and
-      efficiency metrics.
-    - Improve batch robustness for non-finite API return values.
-    - Add `serverExists` guard to prep worker templates (matching the pattern
-      already used in the lite worker).
     - Automate factions/augs/install cadence.
+    - Add persistent metrics history for cross-restart trend analysis.
+    - Explore adaptive hackPercent tuning based on extraction ratio trends.
 
 ## Reference Inspirations
 
@@ -120,11 +115,57 @@ Use these as implementation references when planning new modules or refactors:
     - [Tanimodori/viteburner](https://github.com/Tanimodori/viteburner) - developer tooling, sync, and daemon-oriented utilities.
     - [Nezrahm/bitburner-sync](https://github.com/Nezrahm/bitburner-sync) - lightweight sync tooling and release-driven updates.
 
+## Metrics System
+
+The system is modeled as a **closed-loop controller** (plant: game servers,
+controller: manager.js, actuators: worker scripts, sensors: ns.getServer*
+APIs). Derived metrics use control-theory concepts — transfer functions,
+damping analysis, frequency decomposition — applied to the discrete-time
+samples the manager collects each cycle.
+
+### Data Flow
+
+    manager.js computes instantaneous derived metrics each cycle and writes
+    them as `derivedMetrics` in `manager_status.json`. HUD maintains an
+    in-memory `MetricsRing` (120 samples) to compute trend and frequency
+    metrics. `diag.js` reads the latest snapshot for point-in-time reports.
+
+### Metric Categories
+
+    - **Efficiency**: incomePerGB, extractionRatio (actual/theoretical),
+      weakenTax (defensive thread overhead).
+    - **Utilization**: ramUtilization, hostActivation, batchSlotUtilization,
+      targetCoverage, hostFragmentation.
+    - **Health**: batchSuccessRate, execFailureRatio, prepStability,
+      securityDrift and moneyRatio per target. Composite systemScore (A-F).
+    - **Progress**: prepETA (estimated time to HACK state), income trend,
+      prep velocity (money and security convergence rates).
+    - **Control Theory** (HUD only, requires ring buffer history):
+      dampingEstimate (log-decrement from security oscillation peaks),
+      settlingTime (cycles to steady state after mode change),
+      incomeSpectrum (DFT peak frequency and spectral spread),
+      transferGain (Δincome / Δthreads).
+
+### Key Thresholds
+
+    - extractionRatio: good ≥ 0.5, warn ≥ 0.2
+    - ramUtilization: good ≥ 0.7, warn ≥ 0.5
+    - batchSuccessRate: good ≥ 0.9, warn ≥ 0.5
+    - securityDrift: good ≤ 0.05, warn ≤ 0.2
+    - prepStability: good ≥ 0.8, warn ≥ 0.5
+
+### MetricsRing
+
+    Shared ring buffer class in `runtime-contracts.js`. In-memory only — no
+    persistence. Trends reset on module restart, which is acceptable since
+    the ring fills within 2-4 minutes at normal cycle rates.
+
 ## Tooling
 
     - `diag.js` — standalone diagnostic snapshot: module status, manager state,
-      live workers, RAM analysis, target analysis, data file health.
-      Usage: `run diag.js [--tail]`
+      live workers, RAM analysis, target analysis, derived metrics, data file
+      health. Flags: `--tail`, `--json`, `--control` (adds control analysis).
+      Usage: `run diag.js [--tail] [--json] [--control]`
     - `github-sync-run.js` — pulls files from GitHub into the game and
       optionally launches an entry script. Supports `--mode sync` and `--mode run`.
     - `git-pull.js` — simpler GitHub pull with import rewriting for subfolder
@@ -132,12 +173,9 @@ Use these as implementation references when planning new modules or refactors:
 
 ## Next Modification
 
-    - Add a config file for tuning constants (externalize from
-      `runtime-contracts.js`). Config is optional; missing file falls back to
-      hardcoded defaults. Manager `--flags` override config values.
-    - Build a stocks module using reference repos as inspiration. Capability
-      gated: TIX access check first, then 4S data. Write status to
-      `stocks_status.txt`. Reserve cash for server purchases.
+    - Automate factions/augs/install cadence.
+    - Add persistent metrics history (optional file-backed ring buffer for
+      cross-restart trend analysis).
 
 ## AI Guardrails
 
@@ -157,6 +195,10 @@ Use these as implementation references when planning new modules or refactors:
        include both home and remote hosts.
     9. Do not break income target caching (`cached_income_target` in manager.js)
        — it prevents PREP-mode oscillation.
+   10. Do not remove `derivedMetrics` from `manager_status.json` — it feeds
+       both HUD trend analysis and diag.js reports.
+   11. MetricsRing is in-memory only (no persistence). Trends reset on module
+       restart, which is acceptable.
 
 ## Official Resources
 

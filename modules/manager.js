@@ -125,6 +125,11 @@ export async function main(ns) {
       hosts,
       available_ram
     );
+    const derivedMetrics = compute_derived_metrics(
+      ns, hosts, runnable_hosts, hack_targets,
+      launched_batches, cycle_failed_execs, batch_results,
+      prepDiag, options
+    );
     await write_manager_status(ns, {
       mode: prep_target ? (hybrid_mode ? "HYBRID" : "PREP") : "HACK",
       prepTarget: prep_target ? prep_target.hostname : "",
@@ -142,6 +147,7 @@ export async function main(ns) {
       failedExecs: cycle_failed_execs,
       prepDiag,
       batchDiag,
+      derivedMetrics,
     }, cycle_start);
 
     if (options.verbose) {
@@ -792,6 +798,135 @@ function build_batch_diag(hack_targets, batch_results, launched_batches, failed_
     hostCount: hosts.length,
     availableRam: Math.floor(available_ram),
     targets: batch_results.slice(0, MAX_DIAG_TARGETS),
+  };
+}
+
+function compute_derived_metrics(ns, hosts, runnable_hosts, hack_targets, launched_batches, failed_execs, batch_results, prepDiag, options) {
+  const income = ns.getScriptIncome()[0];
+
+  // RAM totals
+  let totalUsedRam = 0;
+  let totalMaxRam = 0;
+  let strandedRam = 0;
+  for (const h of hosts) {
+    const maxR = ns.getServerMaxRam(h.hostname);
+    totalMaxRam += maxR;
+    totalUsedRam += maxR - h.ram;
+    if (h.ram > 0 && h.ram < MIN_EXEC_RAM) strandedRam += h.ram;
+  }
+  const totalFreeRam = totalMaxRam - totalUsedRam;
+
+  // Efficiency
+  const incomePerGB = totalUsedRam > 0 ? income / totalUsedRam : 0;
+
+  // Theoretical income: sum of (maxMoney * hackPercent / batchCycleTime) across hack targets
+  let theoreticalIncome = 0;
+  for (const t of hack_targets) {
+    const wt = ns.getWeakenTime(t.hostname);
+    if (Number.isFinite(wt) && wt > 0) {
+      const cycleTime = (wt + options.spacingMs * 4) / 1000;
+      theoreticalIncome += (t.maxMoney * options.hackPercent) / cycleTime;
+    }
+  }
+  const extractionRatio = theoreticalIncome > 0 ? Math.min(1, income / theoreticalIncome) : 0;
+
+  // Thread census from live processes
+  let hackThreads = 0, growThreads = 0, weakThreads = 0;
+  for (const h of hosts) {
+    for (const proc of ns.ps(h.hostname)) {
+      const f = proc.filename;
+      if (f === WORKERS.HACK || f === WORKERS.PREP_HACK) hackThreads += proc.threads;
+      else if (f === WORKERS.GROW || f === WORKERS.PREP_GROW) growThreads += proc.threads;
+      else if (f === WORKERS.WEAK || f === WORKERS.PREP_WEAK) weakThreads += proc.threads;
+    }
+  }
+  const totalThreads = hackThreads + growThreads + weakThreads;
+  const weakenTax = totalThreads > 0 ? weakThreads / totalThreads : 0;
+
+  // Utilization
+  const ramUtilization = totalMaxRam > 0 ? totalUsedRam / totalMaxRam : 0;
+  const hostActivation = hosts.length > 0 ? runnable_hosts.length / hosts.length : 0;
+  const maxSlots = hack_targets.length * options.batchesPerWindow;
+  const batchSlotUtilization = maxSlots > 0 ? launched_batches / maxSlots : 0;
+  const scheduledTargets = Object.keys(batch_schedule).length;
+  const targetCoverage = hack_targets.length > 0 ? scheduledTargets / hack_targets.length : 0;
+  const hostFragmentation = totalFreeRam > 0 ? strandedRam / totalFreeRam : 0;
+
+  // Health
+  const blockedTargets = batch_results.filter((r) => r.reason !== "launched" && r.reason !== "partial").length;
+  const totalAttempts = launched_batches + failed_execs + blockedTargets;
+  const batchSuccessRate = totalAttempts > 0 ? launched_batches / totalAttempts : 1;
+  const execFailureRatio = (launched_batches + failed_execs) > 0 ? failed_execs / (launched_batches + failed_execs) : 0;
+  const blockedRatio = hack_targets.length > 0 ? blockedTargets / hack_targets.length : 0;
+
+  // Prep stability
+  const totalPrepHosts = (prepDiag.unchangedHosts || 0) + (prepDiag.adjustedHosts || 0) + (prepDiag.ramLimitedHosts || 0);
+  const prepStability = totalPrepHosts > 0 ? (prepDiag.unchangedHosts || 0) / totalPrepHosts : 1;
+
+  // Per-target health
+  const perTarget = {};
+  for (const t of hack_targets.concat(prepDiag.target ? [{ hostname: prepDiag.target }] : [])) {
+    const hn = t.hostname;
+    if (perTarget[hn]) continue;
+    const srv = ns.getServer(hn);
+    const secDrift = srv.minDifficulty > 0 ? (srv.hackDifficulty - srv.minDifficulty) / srv.minDifficulty : 0;
+    const moneyRatio = srv.moneyMax > 0 ? srv.moneyAvailable / srv.moneyMax : 0;
+    const batchResult = batch_results.find((r) => r.target === hn);
+    perTarget[hn] = {
+      securityDrift: Math.round(secDrift * 1000) / 1000,
+      moneyRatio: Math.round(moneyRatio * 1000) / 1000,
+      liveBatches: batchResult ? batchResult.launched : 0,
+    };
+  }
+
+  // Prep ETA (for primary prep target)
+  let prepETA = null;
+  if (prepDiag.target && prepDiag.state !== "idle") {
+    const srv = ns.getServer(prepDiag.target);
+    const secOverhead = srv.hackDifficulty - srv.minDifficulty;
+    const netWeaken = (prepDiag.totalWeakThreads || 0) * 0.05 - (prepDiag.totalGrowThreads || 0) * 0.004;
+    const wt = ns.getWeakenTime(prepDiag.target);
+    const secETA = netWeaken > 0 && secOverhead > 0 ? (secOverhead / netWeaken) * (wt / 1000) : (secOverhead > 0 ? Infinity : 0);
+    const moneyDeficit = srv.moneyMax - srv.moneyAvailable;
+    const gt = ns.getGrowTime(prepDiag.target);
+    const growRate = (prepDiag.totalGrowThreads || 0) * 0.004 * srv.moneyMax;
+    const moneyETA = moneyDeficit > 0 && growRate > 0 ? (moneyDeficit / growRate) * (gt / 1000) : (moneyDeficit > 0 ? Infinity : 0);
+    prepETA = Math.max(secETA, moneyETA);
+    if (!Number.isFinite(prepETA)) prepETA = -1; // -1 signals "stalled"
+    else prepETA = Math.round(prepETA);
+  }
+
+  // Composite system score
+  const systemScore =
+    extractionRatio * 0.30 +
+    ramUtilization * 0.20 +
+    batchSuccessRate * 0.20 +
+    (1 - blockedRatio) * 0.15 +
+    prepStability * 0.15;
+
+  return {
+    income: Math.round(income),
+    incomePerGB: Math.round(incomePerGB * 100) / 100,
+    extractionRatio: Math.round(extractionRatio * 1000) / 1000,
+    weakenTax: Math.round(weakenTax * 1000) / 1000,
+    ramUtilization: Math.round(ramUtilization * 1000) / 1000,
+    hostActivation: Math.round(hostActivation * 1000) / 1000,
+    batchSlotUtilization: Math.round(batchSlotUtilization * 1000) / 1000,
+    targetCoverage: Math.round(targetCoverage * 1000) / 1000,
+    hostFragmentation: Math.round(hostFragmentation * 1000) / 1000,
+    batchSuccessRate: Math.round(batchSuccessRate * 1000) / 1000,
+    execFailureRatio: Math.round(execFailureRatio * 1000) / 1000,
+    blockedRatio: Math.round(blockedRatio * 1000) / 1000,
+    prepStability: Math.round(prepStability * 1000) / 1000,
+    prepETA,
+    systemScore: Math.round(systemScore * 1000) / 1000,
+    totalThreads,
+    hackThreads,
+    growThreads,
+    weakThreads,
+    totalUsedRam: Math.floor(totalUsedRam),
+    totalMaxRam: Math.floor(totalMaxRam),
+    perTarget,
   };
 }
 
