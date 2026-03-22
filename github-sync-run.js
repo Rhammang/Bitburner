@@ -181,7 +181,6 @@ async function fetch_json_via_wget(ns, url) {
 }
 
 async function sync_files(ns, options, files) {
-  const base_url = `https://raw.githubusercontent.com/${options.owner}/${options.repo}/${options.branch}`;
   let updated = 0;
   let unchanged = 0;
   let failed = 0;
@@ -189,22 +188,31 @@ async function sync_files(ns, options, files) {
   for (const repo_file of files) {
     const local_file = join_path(options.prefix, repo_file);
     const old_content = ns.fileExists(local_file, "home") ? ns.read(local_file) : null;
-    const remote = `${base_url}/${repo_file}?ts=${Date.now()}`;
-    if (options.verbose) ns.print(`wget ${remote} -> ${local_file}`);
 
-    const ok = await ns.wget(remote, local_file);
-    if (!ok) {
+    // Use GitHub Contents API instead of raw.githubusercontent.com to avoid
+    // Fastly CDN caching (up to 5 min stale). The API returns fresh content.
+    let new_content;
+    try {
+      new_content = await fetch_file_content(ns, options, repo_file);
+    } catch (error) {
+      if (options.verbose) ns.print(`API fetch failed for ${repo_file}: ${error}`);
+      // Fallback to raw.githubusercontent.com
+      new_content = await fetch_file_raw(ns, options, repo_file, local_file);
+    }
+
+    if (new_content === null) {
       failed += 1;
       ns.tprint(`  FAILED  ${repo_file}`);
       continue;
     }
 
-    const new_content = ns.read(local_file);
     if (old_content === null) {
       updated += 1;
+      await ns.write(local_file, new_content, "w");
       ns.tprint(`  NEW     ${repo_file}`);
     } else if (new_content !== old_content) {
       updated += 1;
+      await ns.write(local_file, new_content, "w");
       ns.tprint(`  UPDATED ${repo_file}`);
     } else {
       unchanged += 1;
@@ -213,6 +221,25 @@ async function sync_files(ns, options, files) {
   }
 
   return { updated, unchanged, failed };
+}
+
+/** Fetch file content via GitHub Contents API (no CDN caching). */
+async function fetch_file_content(ns, options, repo_file) {
+  const encoded_path = repo_file.split("/").map(encodeURIComponent).join("/");
+  const url = `https://api.github.com/repos/${options.owner}/${options.repo}/contents/${encoded_path}?ref=${options.branch}`;
+  const data = await fetch_json_via_wget(ns, url);
+  if (!data || !data.content) throw new Error("no content in response");
+  // GitHub returns base64-encoded content; decode it
+  return atob(data.content.replace(/\n/g, ""));
+}
+
+/** Fallback: fetch from raw.githubusercontent.com (may be CDN-cached). */
+async function fetch_file_raw(ns, options, repo_file, local_file) {
+  const base_url = `https://raw.githubusercontent.com/${options.owner}/${options.repo}/${options.branch}`;
+  const remote = `${base_url}/${repo_file}?ts=${Date.now()}`;
+  const ok = await ns.wget(remote, local_file);
+  if (!ok) return null;
+  return ns.read(local_file);
 }
 
 function should_include_file(path, extensions) {
