@@ -63,7 +63,8 @@ export async function main(ns) {
       if (adjusted < SELL_THRESHOLD) {
         const revenue = ns.stock.sellStock(pos.sym, pos.shares);
         if (revenue > 0) {
-          const profit = revenue - (pos.shares * pos.avgPrice) - COMMISSION;
+          // revenue from sellStock() is net of commission already
+          const profit = revenue - (pos.shares * pos.avgPrice);
           total_profit += profit;
           ns.tprint(
             `STOCKS: Sold ${pos.sym} ${ns.formatNumber(pos.shares)} shares ` +
