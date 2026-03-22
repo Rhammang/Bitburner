@@ -1,6 +1,6 @@
 # GitHub Copilot Instructions
 
-Use `AI_CONTEXT.md` in the repository root as the canonical project context.
+Use `AGENTS.md` in the repository root as the canonical project context.
 
 ## Expectations
 - Respect the current daemon-centric architecture.
