@@ -442,19 +442,19 @@ function launch_income_workers(ns, hostname, income_host, available_ram) {
 }
 
 /**
- * Compute grow/weaken thread counts for prep, aware of current security state.
- *
- * Three phases based on security drift (curSec - minSec):
- *   1. drift > 5  → weaken-only (grow is extremely inefficient at high sec)
- *   2. drift > 1  → weaken-heavy (70% weaken, 30% grow)
- *   3. drift ≤ 1  → grow-heavy with just enough weaken to offset grow's sec
- *
- * Also leaves a 2% RAM buffer to prevent silent exec failures from RAM
- * estimate rounding.
+ * Get actual per-thread RAM costs from the game, falling back to hardcoded
+ * estimates. Using game values prevents silent exec failures when the
+ * hardcoded constants drift from actual script RAM.
  */
+function get_actual_ram(ns) {
+  const grow = ns.getScriptRam(WORKERS.PREP_GROW) || RAM.PREP_GROW;
+  const weak = ns.getScriptRam(WORKERS.PREP_WEAK) || RAM.PREP_WEAK;
+  return { grow, weak };
+}
+
 function compute_prep_threads(ns, target_host, prep_ram, needs_grow) {
-  const usable = prep_ram * 0.98; // 2% buffer for RAM estimate rounding
-  if (usable < RAM.PREP_WEAK) return { grow: 0, weak: 0 };
+  const { grow: GROW_RAM, weak: WEAK_RAM } = get_actual_ram(ns);
+  if (prep_ram < WEAK_RAM) return { grow: 0, weak: 0 };
 
   let sec_drift = 0;
   try {
@@ -464,26 +464,30 @@ function compute_prep_threads(ns, target_host, prep_ram, needs_grow) {
 
   // Phase 1: Security very high — weaken only (grow is too inefficient)
   if (sec_drift > 5) {
-    return { grow: 0, weak: Math.floor(usable / RAM.PREP_WEAK) };
+    return { grow: 0, weak: Math.floor(prep_ram / WEAK_RAM) };
   }
 
   // Phase 2: Security elevated — weaken-heavy to bring it down while growing
   if (sec_drift > 1) {
     const weak_frac = 0.7;
-    const weak_threads = Math.max(1, Math.floor((usable * weak_frac) / RAM.PREP_WEAK));
+    const weak_threads = Math.max(1, Math.floor((prep_ram * weak_frac) / WEAK_RAM));
     const grow_threads = needs_grow
-      ? Math.floor((usable * (1 - weak_frac)) / RAM.PREP_GROW)
+      ? Math.floor((prep_ram * (1 - weak_frac)) / GROW_RAM)
       : 0;
+    // Verify total fits
+    if (grow_threads * GROW_RAM + weak_threads * WEAK_RAM > prep_ram) {
+      return { grow: 0, weak: Math.floor(prep_ram / WEAK_RAM) };
+    }
     return { grow: grow_threads, weak: weak_threads };
   }
 
   // Phase 3: Security near minimum — grow-heavy (standard prep)
   if (needs_grow) {
-    let grow_threads = Math.floor(usable / (RAM.PREP_GROW + RAM.PREP_WEAK / 12));
+    let grow_threads = Math.floor(prep_ram / (GROW_RAM + WEAK_RAM / 12));
     let weak_threads = Math.max(1, Math.ceil(grow_threads * 0.004 / 0.05));
     while (
       grow_threads > 0 &&
-      grow_threads * RAM.PREP_GROW + weak_threads * RAM.PREP_WEAK > usable
+      grow_threads * GROW_RAM + weak_threads * WEAK_RAM > prep_ram
     ) {
       grow_threads -= 1;
       weak_threads = Math.max(1, Math.ceil(grow_threads * 0.004 / 0.05));
@@ -492,26 +496,28 @@ function compute_prep_threads(ns, target_host, prep_ram, needs_grow) {
   }
 
   // Money full — weaken only
-  return { grow: 0, weak: Math.floor(usable / RAM.PREP_WEAK) };
+  return { grow: 0, weak: Math.floor(prep_ram / WEAK_RAM) };
 }
 
 function launch_prep_workers(ns, hostname, target_host, prep_ram, needs_grow) {
   const { grow, weak } = compute_prep_threads(ns, target_host, prep_ram, needs_grow);
   if (grow > 0 && !ns.exec(WORKERS.PREP_GROW, hostname, grow, target_host)) {
     // Grow exec failed — fall back to weaken-only with full RAM
-    const fallback_weak = Math.floor(prep_ram * 0.98 / RAM.PREP_WEAK);
+    const { weak: WEAK_RAM } = get_actual_ram(ns);
+    const fallback_weak = Math.floor(prep_ram / WEAK_RAM);
     if (fallback_weak > 0) ns.exec(WORKERS.PREP_WEAK, hostname, fallback_weak, target_host);
     return;
   }
   if (weak > 0 && !ns.exec(WORKERS.PREP_WEAK, hostname, weak, target_host)) {
-    // Weaken exec failed (likely RAM) — kill grow, retry with fewer grow threads
+    // Weaken exec failed (likely RAM) — kill grow, halve grow threads and retry
     if (grow > 0) {
       for (const p of ns.ps(hostname)) {
         if (get_worker_kind(p.filename) === "grow" && p.args[0] === target_host) ns.kill(p.pid);
       }
     }
-    const reduced_grow = Math.max(0, grow - Math.ceil(weak * RAM.PREP_WEAK / RAM.PREP_GROW) - 1);
-    const reduced_weak = weak;
+    const { grow: GROW_RAM, weak: WEAK_RAM } = get_actual_ram(ns);
+    const reduced_grow = Math.max(0, Math.floor(grow / 2));
+    const reduced_weak = Math.floor((prep_ram - reduced_grow * GROW_RAM) / WEAK_RAM);
     if (reduced_grow > 0) ns.exec(WORKERS.PREP_GROW, hostname, reduced_grow, target_host);
     if (reduced_weak > 0) ns.exec(WORKERS.PREP_WEAK, hostname, reduced_weak, target_host);
   }
