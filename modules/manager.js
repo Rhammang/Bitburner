@@ -18,6 +18,7 @@ import {
   WORKER_SOURCES,
   WORKERS,
   build_script_target_counts,
+  get_worker_kind,
   is_prep_worker,
   load_config,
   script_target_counts_equal,
@@ -834,10 +835,10 @@ function compute_derived_metrics(ns, hosts, runnable_hosts, hack_targets, launch
   let hackThreads = 0, growThreads = 0, weakThreads = 0;
   for (const h of hosts) {
     for (const proc of ns.ps(h.hostname)) {
-      const f = proc.filename;
-      if (f === WORKERS.HACK || f === WORKERS.PREP_HACK) hackThreads += proc.threads;
-      else if (f === WORKERS.GROW || f === WORKERS.PREP_GROW) growThreads += proc.threads;
-      else if (f === WORKERS.WEAK || f === WORKERS.PREP_WEAK) weakThreads += proc.threads;
+      const kind = get_worker_kind(proc.filename);
+      if (kind === "hack") hackThreads += proc.threads;
+      else if (kind === "grow") growThreads += proc.threads;
+      else if (kind === "weak") weakThreads += proc.threads;
     }
   }
   const totalThreads = hackThreads + growThreads + weakThreads;
