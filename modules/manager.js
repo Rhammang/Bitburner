@@ -415,17 +415,18 @@ function launch_income_workers(ns, hostname, income_host, available_ram) {
   // Sustainable loop hacking: ~1% hack, ~87% grow (sustain money), ~12% weaken (offset security)
   // Hack runs 4x faster than weaken and 3x faster than grow, so a small hack allocation
   // produces disproportionate drain — keep it minimal to prevent depleting the income target.
-  const min_income_ram = RAM.PREP_HACK + RAM.PREP_GROW + RAM.PREP_WEAK;
+  const ar = get_actual_ram(ns);
+  const min_income_ram = ar.hack + ar.grow + ar.weak;
   if (available_ram < min_income_ram) {
     return { launched: false, hackThreads: 0, growThreads: 0, weakThreads: 0 };
   }
 
-  const hack_threads = Math.max(1, Math.floor((available_ram * 0.01) / RAM.PREP_HACK));
-  const weak_threads = Math.max(1, Math.floor((available_ram * 0.12) / RAM.PREP_WEAK));
-  const remaining_ram = available_ram - hack_threads * RAM.PREP_HACK - weak_threads * RAM.PREP_WEAK;
-  const grow_threads = Math.max(1, Math.floor(remaining_ram / RAM.PREP_GROW));
+  const hack_threads = Math.max(1, Math.floor((available_ram * 0.01) / ar.hack));
+  const weak_threads = Math.max(1, Math.floor((available_ram * 0.12) / ar.weak));
+  const remaining_ram = available_ram - hack_threads * ar.hack - weak_threads * ar.weak;
+  const grow_threads = Math.max(1, Math.floor(remaining_ram / ar.grow));
 
-  const total = hack_threads * RAM.PREP_HACK + grow_threads * RAM.PREP_GROW + weak_threads * RAM.PREP_WEAK;
+  const total = hack_threads * ar.hack + grow_threads * ar.grow + weak_threads * ar.weak;
   if (total > available_ram) {
     return { launched: false, hackThreads: 0, growThreads: 0, weakThreads: 0 };
   }
@@ -447,9 +448,14 @@ function launch_income_workers(ns, hostname, income_host, available_ram) {
  * hardcoded constants drift from actual script RAM.
  */
 function get_actual_ram(ns) {
-  const grow = ns.getScriptRam(WORKERS.PREP_GROW) || RAM.PREP_GROW;
-  const weak = ns.getScriptRam(WORKERS.PREP_WEAK) || RAM.PREP_WEAK;
-  return { grow, weak };
+  return {
+    grow: ns.getScriptRam(WORKERS.PREP_GROW) || RAM.PREP_GROW,
+    weak: ns.getScriptRam(WORKERS.PREP_WEAK) || RAM.PREP_WEAK,
+    hack: ns.getScriptRam(WORKERS.PREP_HACK) || RAM.PREP_HACK,
+    bHack: ns.getScriptRam(WORKERS.HACK) || RAM.HACK,
+    bWeak: ns.getScriptRam(WORKERS.WEAK) || RAM.WEAK,
+    bGrow: ns.getScriptRam(WORKERS.GROW) || RAM.GROW,
+  };
 }
 
 function compute_prep_threads(ns, target_host, prep_ram, needs_grow) {
@@ -548,7 +554,8 @@ function launch_home_prep(ns, target_host, income_host, available_ram) {
 }
 
 function launch_remote_prep(ns, hostname, target_host, available_ram, income_host) {
-  if (available_ram < RAM.PREP_WEAK) {
+  const { weak: WEAK_RAM } = get_actual_ram(ns);
+  if (available_ram < WEAK_RAM) {
     return { state: "ram-limited" };
   }
 
@@ -563,7 +570,7 @@ function launch_remote_prep(ns, hostname, target_host, available_ram, income_hos
   }
 
   const prep_ram = available_ram - income_ram;
-  if (prep_ram < RAM.PREP_WEAK) {
+  if (prep_ram < WEAK_RAM) {
     return { state: "ram-limited" };
   }
 
@@ -634,7 +641,7 @@ function launch_batches_for_target(ns, target, hosts, options) {
       continue;
     }
 
-    const jobs = build_batch_jobs(template, target.hostname, landing_time, options.spacingMs);
+    const jobs = build_batch_jobs(ns, template, target.hostname, landing_time, options.spacingMs);
 
     const plan = plan_job_allocations(jobs, hosts);
     if (!plan) {
@@ -703,34 +710,35 @@ function calculate_batch_template(ns, target, options) {
   };
 }
 
-function build_batch_jobs(template, target, landing_time, spacing_ms) {
+function build_batch_jobs(ns, template, target, landing_time, spacing_ms) {
   const now = Date.now();
+  const ar = get_actual_ram(ns);
   return [
     {
       script: WORKERS.HACK,
       threads: template.hackThreads,
-      ram: RAM.HACK,
+      ram: ar.bHack,
       delay: Math.max(0, landing_time - spacing_ms - template.hackTime - now),
       target,
     },
     {
       script: WORKERS.WEAK,
       threads: template.weak1Threads,
-      ram: RAM.WEAK,
+      ram: ar.bWeak,
       delay: Math.max(0, landing_time - template.weakenTime - now),
       target,
     },
     {
       script: WORKERS.GROW,
       threads: template.growThreads,
-      ram: RAM.GROW,
+      ram: ar.bGrow,
       delay: Math.max(0, landing_time + spacing_ms - template.growTime - now),
       target,
     },
     {
       script: WORKERS.WEAK,
       threads: template.weak2Threads,
-      ram: RAM.WEAK,
+      ram: ar.bWeak,
       delay: Math.max(0, landing_time + spacing_ms * 2 - template.weakenTime - now),
       target,
     },
