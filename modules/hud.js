@@ -146,19 +146,22 @@ export async function main(ns) {
     const batch_mode = mode === "HACK" || mode === "HYBRID";
 
     if (prep_mode) {
-      const prep_host = String(manager_status.prepTarget);
-      let money_pct = "?";
-      let sec_delta = "?";
-      try {
-        const srv = ns.getServer(prep_host);
-        money_pct = srv.moneyMax > 0 ? Math.round((srv.moneyAvailable / srv.moneyMax) * 100) : 0;
-        sec_delta = (srv.hackDifficulty - srv.minDifficulty).toFixed(1);
-      } catch { /* server may not exist */ }
-      left.push("Prep");
-      right.push(`${short_host(prep_host)} $${money_pct}% +${sec_delta}sec`);
+      const active = manager_status.activePrepTargets || (manager_status.prepTarget ? [manager_status.prepTarget] : []);
+      for (let pi = 0; pi < active.length; pi++) {
+        const prep_host = String(active[pi]);
+        let money_pct = "?";
+        let sec_delta = "?";
+        try {
+          const srv = ns.getServer(prep_host);
+          money_pct = srv.moneyMax > 0 ? Math.round((srv.moneyAvailable / srv.moneyMax) * 100) : 0;
+          sec_delta = (srv.hackDifficulty - srv.minDifficulty).toFixed(1);
+        } catch { /* server may not exist */ }
+        left.push(pi === 0 ? "Prep" : `Prep${pi + 1}`);
+        right.push(`${short_host(prep_host)} $${money_pct}% +${sec_delta}sec`);
+      }
 
       const income_src = manager_status.prepIncomeTarget;
-      if (income_src && income_src !== prep_host) {
+      if (income_src && !active.includes(income_src)) {
         left.push("Prep Src");
         right.push(short_host(String(income_src)));
       }
@@ -182,8 +185,9 @@ export async function main(ns) {
 
     if (batch_mode) {
       const sched = to_num(manager_status.scheduledTargets);
+      const hp = manager_status.hackPercent;
       left.push("Batch Live");
-      right.push(`j${hwgw_live.jobs} sc${sched} t${hwgw_live.targetCount} H${hwgw_live.hackThreads} G${hwgw_live.growThreads} W${hwgw_live.weakThreads}`);
+      right.push(`j${hwgw_live.jobs} sc${sched} t${hwgw_live.targetCount} h%${hp ? Math.round(hp * 100) : "?"} H${hwgw_live.hackThreads} G${hwgw_live.growThreads} W${hwgw_live.weakThreads}`);
 
       const failed = to_num(manager_status.failedExecs);
       if (failed > 0) {

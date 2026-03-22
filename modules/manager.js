@@ -52,6 +52,7 @@ let cycle_failed_execs = 0;
 let cached_income_target = ""; // stable income target across cycles (prevents oscillation)
 const MAX_DIAG_HOSTS = 8;
 const MAX_DIAG_TARGETS = 8;
+const MAX_PREP_TARGETS = 3;
 
 // Money-delta income tracking — ns.getScriptIncome() only counts running
 // scripts, so fire-and-forget batch workers are invisible. Track player
@@ -59,6 +60,12 @@ const MAX_DIAG_TARGETS = 8;
 let prev_money = -1;
 let prev_money_time = 0;
 let money_delta_income = 0; // EMA-smoothed $/sec
+
+// Adaptive hackPercent state
+let adaptive_hack_pct = 0; // 0 = not initialized, set from options on first HACK cycle
+let hack_mode_cycles = 0;  // cycles spent in HACK/HYBRID mode (reset on PREP-only)
+let ema_extraction = 0;    // smoothed extraction ratio
+let ema_ram_util = 0;      // smoothed RAM utilization
 
 export function autocomplete(data, args) {
   data.flags(argsSchema);
@@ -105,13 +112,25 @@ export async function main(ns) {
     const hybrid_mode = Boolean(prep_target && hack_targets.length > 0);
     const prep_hosts = get_prep_hosts(ns, hybrid_mode);
     const prep_income_target =
-      prep_target && !hybrid_mode ? pick_prep_income_target(ns, hack_targets) : "";
-    const prepDiag = prep_target
-      ? await run_prep_workers(ns, prep_target, prep_income_target, options.homeReserve, prep_hosts, hybrid_mode)
-      : { state: "idle" };
+      prep_target && !hybrid_mode ? pick_prep_income_target(ns, hack_targets, server_map, prep_target.hostname) : "";
 
+    let prepDiag;
     if (!prep_target) {
       stop_prep_workers(ns);
+      prepDiag = { state: "idle" };
+    } else {
+      const active_prep = prep_targets.slice(0, MAX_PREP_TARGETS);
+      const host_assignments = distribute_prep_hosts(prep_hosts, active_prep);
+      // Clean stale prep workers from hosts not assigned to any prep target
+      const all_prep_set = new Set(prep_hosts);
+      cleanup_stale_prep(ns, all_prep_set);
+      const diags = [];
+      for (let i = 0; i < active_prep.length; i++) {
+        const income = i === 0 ? prep_income_target : "";
+        const d = await run_prep_workers(ns, active_prep[i], income, options.homeReserve, host_assignments[i], hybrid_mode);
+        diags.push(d);
+      }
+      prepDiag = merge_prep_diags(diags);
     }
 
     const hosts = get_hosts(ns)
@@ -148,15 +167,18 @@ export async function main(ns) {
       launched_batches, cycle_failed_execs, batch_results,
       prepDiag, options
     );
+    adapt_hack_percent(options, derivedMetrics, hack_targets.length > 0);
     await write_manager_status(ns, {
       mode: prep_target ? (hybrid_mode ? "HYBRID" : "PREP") : "HACK",
       prepTarget: prep_target ? prep_target.hostname : "",
+      activePrepTargets: prepDiag.targets ? prepDiag.targets.map((t) => t.target) : (prep_target ? [prep_target.hostname] : []),
       prepIncomeTarget: prep_income_target,
       totalTargets: server_map.length,
       prepTargets: prep_targets.length,
       hackTargets: hack_targets.length,
       launchedBatches: launched_batches,
       scheduledTargets: Object.keys(batch_schedule).length,
+      hackPercent: Math.round(options.hackPercent * 1000) / 1000,
       homeReserve: options.homeReserve,
       prepHostCount: prep_target ? prep_hosts.length : 0,
       hostCount: hosts.length,
@@ -193,6 +215,41 @@ function get_options(ns) {
     hackPercent: clamp(Number(flags["hack-percent"]) || cfg.hackPercent, 0.01, 0.9),
     verbose: Boolean(flags.verbose),
   };
+}
+
+function adapt_hack_percent(options, metrics, has_hack_targets) {
+  if (!has_hack_targets) {
+    hack_mode_cycles = 0;
+    return;
+  }
+  // Initialize from configured value on first HACK cycle
+  if (adaptive_hack_pct === 0) adaptive_hack_pct = options.hackPercent;
+  hack_mode_cycles++;
+
+  const ext = metrics.extractionRatio ?? 0;
+  const ram = metrics.ramUtilization ?? 0;
+  const alpha = 0.15;
+  ema_extraction = ema_extraction === 0 ? ext : alpha * ext + (1 - alpha) * ema_extraction;
+  ema_ram_util = ema_ram_util === 0 ? ram : alpha * ram + (1 - alpha) * ema_ram_util;
+
+  // Wait for EMA to stabilize before adjusting
+  if (hack_mode_cycles < 10) {
+    options.hackPercent = adaptive_hack_pct;
+    return;
+  }
+
+  // Adjustment logic:
+  //   High extraction (>0.5) + RAM available (<0.85) → increase (bigger batches earn more)
+  //   Low extraction (<0.3) + RAM saturated (>0.8)   → decrease (batches too big to fit)
+  //   Low extraction (<0.3) + RAM available (<0.8)    → hold (problem is elsewhere)
+  const step = 0.005; // 0.5% per cycle — slow adjustment
+  if (ema_extraction > 0.5 && ema_ram_util < 0.85) {
+    adaptive_hack_pct = Math.min(0.50, adaptive_hack_pct + step);
+  } else if (ema_extraction < 0.3 && ema_ram_util > 0.8) {
+    adaptive_hack_pct = Math.max(0.05, adaptive_hack_pct - step);
+  }
+
+  options.hackPercent = adaptive_hack_pct;
 }
 
 function clamp(value, min, max) {
@@ -252,7 +309,6 @@ async function run_prep_workers(ns, target, income_target, home_reserve, prep_ho
     sec_drift = srv.hackDifficulty - srv.minDifficulty;
   } catch { /* use 0 */ }
   const wants_grow = needs_grow && sec_drift <= 5;
-  const prep_host_set = new Set(prep_hosts);
   const diag = {
     state: "stable",
     target: target.hostname,
@@ -273,21 +329,6 @@ async function run_prep_workers(ns, target, income_target, home_reserve, prep_ho
 
   // Sync worker scripts to purchased servers if missing
   const scripts = Object.values(WORKERS);
-  for (const hostname of get_hosts(ns)) {
-    if (prep_host_set.has(hostname)) continue;
-    let cleared = 0;
-    for (const proc of ns.ps(hostname)) {
-      if (is_prep_script(proc.filename)) {
-        ns.kill(proc.pid);
-        cleared += 1;
-      }
-    }
-    if (cleared > 0) {
-      diag.staleHostsCleared += 1;
-      diag.staleWorkersKilled += cleared;
-    }
-  }
-
   for (const hostname of prep_hosts) {
     if (hostname === "home") continue;
     if (scripts.some((s) => !ns.fileExists(s, hostname))) {
@@ -396,6 +437,75 @@ function get_prep_hosts(ns, hybrid_mode) {
   const purchased_hosts = new Set(ns.getPurchasedServers());
   const prep_hosts = hosts.filter((hostname) => hostname === "home" || !purchased_hosts.has(hostname));
   return prep_hosts.length > 0 ? prep_hosts : hosts.slice(0, 1);
+}
+
+function cleanup_stale_prep(ns, prep_host_set) {
+  for (const hostname of get_hosts(ns)) {
+    if (prep_host_set.has(hostname)) continue;
+    for (const proc of ns.ps(hostname)) {
+      if (is_prep_script(proc.filename)) ns.kill(proc.pid);
+    }
+  }
+}
+
+function distribute_prep_hosts(hosts, targets) {
+  if (targets.length <= 1) return [hosts];
+  // Primary target gets home + 60% of remaining hosts; others split the rest evenly.
+  const assignments = targets.map(() => []);
+  const home_idx = hosts.indexOf("home");
+  const remaining = hosts.filter((h) => h !== "home");
+
+  if (home_idx >= 0) assignments[0].push("home");
+
+  const primary_count = Math.max(1, Math.ceil(remaining.length * 0.6));
+  assignments[0].push(...remaining.slice(0, primary_count));
+
+  const rest = remaining.slice(primary_count);
+  const secondary_count = targets.length - 1;
+  for (let i = 0; i < rest.length; i++) {
+    assignments[1 + (i % secondary_count)].push(rest[i]);
+  }
+  return assignments;
+}
+
+function merge_prep_diags(diags) {
+  if (diags.length === 1) return diags[0];
+  const merged = {
+    state: "stable",
+    targets: diags.map((d) => ({ target: d.target, incomeTarget: d.incomeTarget, needsGrow: d.needsGrow })),
+    target: diags[0].target,
+    incomeTarget: diags[0].incomeTarget,
+    hybridMode: diags[0].hybridMode,
+    needsGrow: diags[0].needsGrow,
+    prepHostCount: 0,
+    unchangedHosts: 0,
+    adjustedHosts: 0,
+    ramLimitedHosts: 0,
+    staleHostsCleared: 0,
+    staleWorkersKilled: 0,
+    totalHackThreads: 0,
+    totalGrowThreads: 0,
+    totalWeakThreads: 0,
+    hosts: [],
+  };
+  for (const d of diags) {
+    merged.prepHostCount += d.prepHostCount || 0;
+    merged.unchangedHosts += d.unchangedHosts || 0;
+    merged.adjustedHosts += d.adjustedHosts || 0;
+    merged.ramLimitedHosts += d.ramLimitedHosts || 0;
+    merged.staleHostsCleared += d.staleHostsCleared || 0;
+    merged.staleWorkersKilled += d.staleWorkersKilled || 0;
+    merged.totalHackThreads += d.totalHackThreads || 0;
+    merged.totalGrowThreads += d.totalGrowThreads || 0;
+    merged.totalWeakThreads += d.totalWeakThreads || 0;
+    if (d.hosts) merged.hosts.push(...d.hosts);
+  }
+  if (merged.ramLimitedHosts >= merged.prepHostCount && merged.prepHostCount > 0) {
+    merged.state = "ram-limited";
+  } else if (merged.adjustedHosts > 0 || merged.staleWorkersKilled > 0) {
+    merged.state = "adjusting";
+  }
+  return merged;
 }
 
 function is_prep_script(filename) {
@@ -825,7 +935,7 @@ async function write_server_map_if_needed(ns, server_map, now) {
   await ns.write(SERVER_MAP_FILE, JSON.stringify(server_map, null, 2), "w");
 }
 
-function pick_prep_income_target(ns, hack_targets) {
+function pick_prep_income_target(ns, hack_targets, server_map = [], prep_hostname = "") {
   // Prefer to keep the current target stable — only evict it if it drops out of HACK state
   // entirely or falls below 95% money. This prevents per-cycle oscillation when money
   // fluctuates near the 99% HACK threshold.
@@ -838,9 +948,16 @@ function pick_prep_income_target(ns, hack_targets) {
         if (money_ratio >= 0.95) return cached_income_target;
       } catch { /* fall through */ }
     }
+    // If cached target isn't a hack target, it may be a fallback — keep it if it still exists
+    if (!still_hack && cached_income_target !== prep_hostname) {
+      try {
+        if (ns.serverExists(cached_income_target)) return cached_income_target;
+      } catch { /* fall through */ }
+    }
     cached_income_target = "";
   }
 
+  // First choice: a fully prepped HACK-state server
   for (const t of hack_targets) {
     try {
       const srv = ns.getServer(t.hostname);
@@ -850,7 +967,16 @@ function pick_prep_income_target(ns, hack_targets) {
     cached_income_target = t.hostname;
     return t.hostname;
   }
-  // No suitable income target — caller will skip income workers entirely
+
+  // Fallback: pick the best rooted server from the map that isn't the prep target.
+  // Income workers are loop scripts (weaken/grow/hack cycle) so they handle unprepped
+  // servers naturally — they just earn less until the server stabilizes.
+  for (const t of server_map) {
+    if (!t.hasAdminRights || t.hostname === prep_hostname) continue;
+    cached_income_target = t.hostname;
+    return t.hostname;
+  }
+
   return "";
 }
 

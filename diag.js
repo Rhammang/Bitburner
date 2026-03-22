@@ -83,7 +83,8 @@ export async function main(ns) {
     const prep_mode = mgr.mode === "PREP" || mgr.mode === "HYBRID";
     const batch_mode = mgr.mode === "HACK" || mgr.mode === "HYBRID";
     if (prep_mode) {
-      ns.tprint(`  Prep target: ${mgr.prepTarget || "none"}`);
+      const active = mgr.activePrepTargets || (mgr.prepTarget ? [mgr.prepTarget] : []);
+      ns.tprint(`  Prep target${active.length > 1 ? "s" : ""}: ${active.join(", ") || "none"}`);
       ns.tprint(`  Income target: ${mgr.prepIncomeTarget || "none"}`);
       ns.tprint(`  Targets: ${mgr.prepTargets || 0} prep / ${mgr.hackTargets || 0} hack / ${mgr.totalTargets || 0} total`);
       if (mgr.prepHostCount) {
@@ -101,7 +102,7 @@ export async function main(ns) {
       }
     }
     if (batch_mode) {
-      ns.tprint(`  Batches launched: ${mgr.launchedBatches || 0}`);
+      ns.tprint(`  Batches launched: ${mgr.launchedBatches || 0}  |  hackPercent: ${mgr.hackPercent ? Math.round(mgr.hackPercent * 100) + "%" : "??"}`);
       ns.tprint(`  Targets: ${mgr.hackTargets || 0} hack / ${mgr.prepTargets || 0} prep`);
       ns.tprint(`  Hosts: ${mgr.runnableHostCount || 0}/${mgr.hostCount || 0}  RAM: ${fmt_ram(mgr.availableRam)}`);
       if (mgr.batchDiag) {
