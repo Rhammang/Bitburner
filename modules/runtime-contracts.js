@@ -61,12 +61,12 @@ export const BATCH_WORKER_FILES = [
 ];
 
 export const WORKER_RAM_COSTS = {
-  PREP_WEAK: 1.75,
-  PREP_GROW: 1.75,
-  PREP_HACK: 1.7,
-  HACK: 1.7,
-  WEAK: 1.75,
-  GROW: 1.75,
+  PREP_WEAK: 1.8,  // 1.6 base + 0.15 weaken + 0.05 serverExists
+  PREP_GROW: 1.8,  // 1.6 base + 0.15 grow + 0.05 serverExists
+  PREP_HACK: 1.75, // 1.6 base + 0.1 hack + 0.05 serverExists
+  HACK: 1.7,       // 1.6 base + 0.1 hack
+  WEAK: 1.75,      // 1.6 base + 0.15 weaken
+  GROW: 1.75,      // 1.6 base + 0.15 grow
 };
 
 export const WORKER_SOURCES = {
