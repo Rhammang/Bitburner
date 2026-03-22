@@ -10,6 +10,7 @@ export const TARGETS_FILE = `${DATA_DIR}targets.txt`;
 export const PREPPED_FILE = `${DATA_DIR}prepped.txt`;
 export const CONTRACTS_STATUS_FILE = `${DATA_DIR}contracts_status.txt`;
 export const STOCKS_STATUS_FILE = `${DATA_DIR}stocks_status.txt`;
+export const FACTIONS_STATUS_FILE = `${DATA_DIR}factions_status.json`;
 export const DISABLED_PREFIX = `${DATA_DIR}disabled_`;
 
 export const MODULE_FILES = {
@@ -19,6 +20,7 @@ export const MODULE_FILES = {
   BUY_SERVERS: "buy-servers.js",
   CONTRACTS: "contracts.js",
   STOCKS: "stocks.js",
+  FACTIONS: "factions.js",
   ROOT_LITE: "root-lite.js",
   DEPLOY_LITE: "deploy-lite.js",
 };
@@ -29,6 +31,7 @@ export const HUD_MODULE_FILE = `${MODULES_DIR}${MODULE_FILES.HUD}`;
 export const BUY_SERVERS_MODULE_FILE = `${MODULES_DIR}${MODULE_FILES.BUY_SERVERS}`;
 export const CONTRACTS_MODULE_FILE = `${MODULES_DIR}${MODULE_FILES.CONTRACTS}`;
 export const STOCKS_MODULE_FILE = `${MODULES_DIR}${MODULE_FILES.STOCKS}`;
+export const FACTIONS_MODULE_FILE = `${MODULES_DIR}${MODULE_FILES.FACTIONS}`;
 export const ROOT_LITE_MODULE_FILE = `${MODULES_DIR}${MODULE_FILES.ROOT_LITE}`;
 export const DEPLOY_LITE_MODULE_FILE = `${MODULES_DIR}${MODULE_FILES.DEPLOY_LITE}`;
 
@@ -95,6 +98,7 @@ export const CORE_MODULES = [
   { file: MODULE_FILES.BUY_SERVERS, desc: "Server Purchase Manager", interval: 20000, bootCritical: false },
   { file: MODULE_FILES.CONTRACTS, desc: "Contract Solver", interval: 60000, bootCritical: false },
   { file: MODULE_FILES.STOCKS, desc: "Stock Trader", interval: 30000, bootCritical: false },
+  { file: MODULE_FILES.FACTIONS, desc: "Faction & Aug Manager", interval: 30000, bootCritical: false },
 ];
 
 export const LITE_BOOT_MODULES = [
@@ -109,6 +113,7 @@ export const MODULE_ROWS = [
   { file: MODULE_FILES.BUY_SERVERS, label: "Servers" },
   { file: MODULE_FILES.CONTRACTS, label: "Contracts" },
   { file: MODULE_FILES.STOCKS, label: "Stocks" },
+  { file: MODULE_FILES.FACTIONS, label: "Factions" },
 ];
 
 export const LITE_ROWS = [

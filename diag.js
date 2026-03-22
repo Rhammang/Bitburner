@@ -11,6 +11,7 @@
 import {
   BATCH_WORKER_FILES,
   CONTRACTS_STATUS_FILE,
+  FACTIONS_STATUS_FILE,
   MANAGER_STATUS_FILE,
   METRICS_THRESHOLDS,
   MODULE_STATUS_FILE,
@@ -227,6 +228,7 @@ export async function main(ns) {
     PREPPED_FILE,
     CONTRACTS_FILE,
     STOCKS_STATUS_FILE,
+    FACTIONS_STATUS_FILE,
   ];
   for (const f of data_files) {
     const exists = ns.fileExists(f, "home");
@@ -360,6 +362,41 @@ export async function main(ns) {
     }
   }
 
+  // ── 13. Factions Status ──────────────────────────────────
+  ns.tprint(`${thin}`);
+  ns.tprint("▸ FACTIONS & AUGMENTATIONS");
+  const factions = read_json(ns, FACTIONS_STATUS_FILE, null);
+  if (!factions) {
+    ns.tprint("  No factions status file (module may not be running or no SF4)");
+  } else {
+    ns.tprint(`  Factions joined: ${factions.factionCount || 0}  |  Updated: ${factions.timestamp || "unknown"}`);
+    ns.tprint(`  Augs available: ${factions.totalAugsAvailable || 0}  affordable: ${factions.affordableCount || 0}  need rep: ${factions.needRepCount || 0}`);
+    ns.tprint(`  Pending install: ${factions.pendingInstall || 0}`);
+    if (factions.joined && factions.joined.length > 0) {
+      ns.tprint(`  Recently joined: ${factions.joined.join(", ")}`);
+    }
+    if (factions.purchased && factions.purchased.length > 0) {
+      ns.tprint(`  Recently purchased: ${factions.purchased.join(", ")}`);
+    }
+    if (factions.workTarget) {
+      const wt = factions.workTarget;
+      ns.tprint(`  Working for: ${wt.faction}  (aug: ${wt.aug})`);
+      ns.tprint(`    Rep: ${fmt_money(wt.repCurrent)} / ${fmt_money(wt.repNeeded)}  (${fmt_money(wt.repRemaining)} remaining)`);
+    }
+    if (factions.topAffordable && factions.topAffordable.length > 0) {
+      ns.tprint("  Top affordable augs:");
+      for (const a of factions.topAffordable) {
+        ns.tprint(`    ${pad(a.name, 35)} ${pad(a.faction, 20)} $${fmt_money(a.price)}`);
+      }
+    }
+    if (factions.topNeedRep && factions.topNeedRep.length > 0) {
+      ns.tprint("  Top augs needing rep:");
+      for (const a of factions.topNeedRep) {
+        ns.tprint(`    ${pad(a.name, 35)} ${pad(a.faction, 20)} rep:${fmt_money(a.repCurrent)}/${fmt_money(a.repNeeded)}`);
+      }
+    }
+  }
+
   ns.tprint(`${sep}`);
   ns.tprint("  END DIAGNOSTICS");
   ns.tprint(`${sep}`);
@@ -375,6 +412,7 @@ function build_json_snapshot(ns) {
     serverMap: read_json(ns, SERVER_MAP_FILE, []),
     income: { moneyDelta: mgr?.derivedMetrics?.income || 0, scriptApi: ns.getScriptIncome()[0] },
     stocks: parse_stocks_status(ns),
+    factions: read_json(ns, FACTIONS_STATUS_FILE, null),
     ram: {
       homeMax: ns.getServerMaxRam("home"),
       homeUsed: ns.getServerUsedRam("home"),
@@ -385,7 +423,7 @@ function build_json_snapshot(ns) {
       })),
     },
     dataFiles: [MODULE_STATUS_FILE, MANAGER_STATUS_FILE, SERVER_MAP_FILE,
-      ROOTED_FILE, TARGETS_FILE, PREPPED_FILE, CONTRACTS_FILE, STOCKS_STATUS_FILE]
+      ROOTED_FILE, TARGETS_FILE, PREPPED_FILE, CONTRACTS_FILE, STOCKS_STATUS_FILE, FACTIONS_STATUS_FILE]
       .map((f) => ({ path: f, exists: ns.fileExists(f, "home"), size: ns.read(f).length })),
     workerScripts: WORKER_FILES.map((w) => ({ path: w, exists: ns.fileExists(w, "home") })),
   };

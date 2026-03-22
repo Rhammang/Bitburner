@@ -244,6 +244,14 @@ async function run_prep_workers(ns, target, income_target, home_reserve, prep_ho
   // Don't fall back to hacking the prep target — it's counterproductive
   const income_host = income_target || "";
   const needs_grow = target_needs_grow(ns, target.hostname);
+  // Check security state to determine if grow workers should run.
+  // When security is very high, grow is too inefficient — weaken only.
+  let sec_drift = 0;
+  try {
+    const srv = ns.getServer(target.hostname);
+    sec_drift = srv.hackDifficulty - srv.minDifficulty;
+  } catch { /* use 0 */ }
+  const wants_grow = needs_grow && sec_drift <= 5;
   const prep_host_set = new Set(prep_hosts);
   const diag = {
     state: "stable",
@@ -296,7 +304,7 @@ async function run_prep_workers(ns, target, income_target, home_reserve, prep_ho
 
     // Build expected worker configuration for this host
     const expected = [];
-    if (needs_grow) expected.push({ script: WORKERS.PREP_GROW, target: target.hostname });
+    if (wants_grow) expected.push({ script: WORKERS.PREP_GROW, target: target.hostname });
     expected.push({ script: WORKERS.PREP_WEAK, target: target.hostname });
     if (wants_income) {
       expected.push({ script: WORKERS.PREP_HACK, target: income_host });
@@ -312,9 +320,33 @@ async function run_prep_workers(ns, target, income_target, home_reserve, prep_ho
     );
 
     if (script_target_counts_equal(expected_counts, actual_counts)) {
-      diag.unchangedHosts += 1;
-      capture_prep_host_diag(ns, diag, hostname, "stable", expected.length);
-      continue;
+      // Check if the grow:weaken thread ratio is appropriate for current security.
+      // If security phase has changed, the old ratio may be counterproductive.
+      const grow_procs = prep_procs.filter((p) => get_worker_kind(p.filename) === "grow");
+      const weak_procs = prep_procs.filter((p) => get_worker_kind(p.filename) === "weak");
+      const host_grow = grow_procs.reduce((s, p) => s + (p.threads || 0), 0);
+      const host_weak = weak_procs.reduce((s, p) => s + (p.threads || 0), 0);
+      const ratio = host_weak > 0 ? host_grow / host_weak : Infinity;
+      // In high-sec phases (drift>1) the ratio should be ≤ ~0.5:1 grow:weak.
+      // In grow-heavy phase (drift≤1) the ratio is ~12.5:1.
+      // If we're in high-sec but the ratio is grow-heavy, force relaunch.
+      let sec_drift = 0;
+      try {
+        const srv = ns.getServer(target.hostname);
+        sec_drift = srv.hackDifficulty - srv.minDifficulty;
+      } catch { /* use 0 */ }
+      const ratio_ok = sec_drift > 5
+        ? host_grow === 0  // Should be weaken-only
+        : sec_drift > 1
+          ? ratio <= 1.0   // Should be weaken-heavy
+          : true;          // Grow-heavy is fine
+
+      if (ratio_ok) {
+        diag.unchangedHosts += 1;
+        capture_prep_host_diag(ns, diag, hostname, "stable", expected.length);
+        continue;
+      }
+      // Security phase changed — fall through to kill and relaunch
     }
 
     // Workers are wrong — kill all prep scripts and relaunch
@@ -357,6 +389,8 @@ function get_prep_hosts(ns, hybrid_mode) {
     }
   ));
 
+  // In pure PREP mode, use all hosts (nothing to batch on).
+  // In HYBRID mode, reserve purchased servers for batch workers.
   if (!hybrid_mode) return hosts;
 
   const purchased_hosts = new Set(ns.getPurchasedServers());
@@ -407,6 +441,82 @@ function launch_income_workers(ns, hostname, income_host, available_ram) {
   };
 }
 
+/**
+ * Compute grow/weaken thread counts for prep, aware of current security state.
+ *
+ * Three phases based on security drift (curSec - minSec):
+ *   1. drift > 5  → weaken-only (grow is extremely inefficient at high sec)
+ *   2. drift > 1  → weaken-heavy (70% weaken, 30% grow)
+ *   3. drift ≤ 1  → grow-heavy with just enough weaken to offset grow's sec
+ *
+ * Also leaves a 2% RAM buffer to prevent silent exec failures from RAM
+ * estimate rounding.
+ */
+function compute_prep_threads(ns, target_host, prep_ram, needs_grow) {
+  const usable = prep_ram * 0.98; // 2% buffer for RAM estimate rounding
+  if (usable < RAM.PREP_WEAK) return { grow: 0, weak: 0 };
+
+  let sec_drift = 0;
+  try {
+    const srv = ns.getServer(target_host);
+    sec_drift = srv.hackDifficulty - srv.minDifficulty;
+  } catch { /* use 0 */ }
+
+  // Phase 1: Security very high — weaken only (grow is too inefficient)
+  if (sec_drift > 5) {
+    return { grow: 0, weak: Math.floor(usable / RAM.PREP_WEAK) };
+  }
+
+  // Phase 2: Security elevated — weaken-heavy to bring it down while growing
+  if (sec_drift > 1) {
+    const weak_frac = 0.7;
+    const weak_threads = Math.max(1, Math.floor((usable * weak_frac) / RAM.PREP_WEAK));
+    const grow_threads = needs_grow
+      ? Math.floor((usable * (1 - weak_frac)) / RAM.PREP_GROW)
+      : 0;
+    return { grow: grow_threads, weak: weak_threads };
+  }
+
+  // Phase 3: Security near minimum — grow-heavy (standard prep)
+  if (needs_grow) {
+    let grow_threads = Math.floor(usable / (RAM.PREP_GROW + RAM.PREP_WEAK / 12));
+    let weak_threads = Math.max(1, Math.ceil(grow_threads * 0.004 / 0.05));
+    while (
+      grow_threads > 0 &&
+      grow_threads * RAM.PREP_GROW + weak_threads * RAM.PREP_WEAK > usable
+    ) {
+      grow_threads -= 1;
+      weak_threads = Math.max(1, Math.ceil(grow_threads * 0.004 / 0.05));
+    }
+    return { grow: grow_threads, weak: weak_threads };
+  }
+
+  // Money full — weaken only
+  return { grow: 0, weak: Math.floor(usable / RAM.PREP_WEAK) };
+}
+
+function launch_prep_workers(ns, hostname, target_host, prep_ram, needs_grow) {
+  const { grow, weak } = compute_prep_threads(ns, target_host, prep_ram, needs_grow);
+  if (grow > 0 && !ns.exec(WORKERS.PREP_GROW, hostname, grow, target_host)) {
+    // Grow exec failed — fall back to weaken-only with full RAM
+    const fallback_weak = Math.floor(prep_ram * 0.98 / RAM.PREP_WEAK);
+    if (fallback_weak > 0) ns.exec(WORKERS.PREP_WEAK, hostname, fallback_weak, target_host);
+    return;
+  }
+  if (weak > 0 && !ns.exec(WORKERS.PREP_WEAK, hostname, weak, target_host)) {
+    // Weaken exec failed (likely RAM) — kill grow, retry with fewer grow threads
+    if (grow > 0) {
+      for (const p of ns.ps(hostname)) {
+        if (get_worker_kind(p.filename) === "grow" && p.args[0] === target_host) ns.kill(p.pid);
+      }
+    }
+    const reduced_grow = Math.max(0, grow - Math.ceil(weak * RAM.PREP_WEAK / RAM.PREP_GROW) - 1);
+    const reduced_weak = weak;
+    if (reduced_grow > 0) ns.exec(WORKERS.PREP_GROW, hostname, reduced_grow, target_host);
+    if (reduced_weak > 0) ns.exec(WORKERS.PREP_WEAK, hostname, reduced_weak, target_host);
+  }
+}
+
 function launch_home_prep(ns, target_host, income_host, available_ram) {
   if (available_ram < MIN_EXEC_RAM) {
     return { state: "ram-limited" };
@@ -427,25 +537,7 @@ function launch_home_prep(ns, target_host, income_host, available_ram) {
     return { state: "ram-limited" };
   }
 
-  if (needs_grow) {
-    // Server needs money — grow-heavy ratio with weaken to offset security
-    let grow_threads = Math.floor(prep_ram / (RAM.PREP_GROW + RAM.PREP_WEAK / 12));
-    let weak_threads = Math.max(1, Math.ceil(grow_threads * 0.004 / 0.05));
-    while (
-      grow_threads > 0 &&
-      grow_threads * RAM.PREP_GROW + weak_threads * RAM.PREP_WEAK > prep_ram
-    ) {
-      grow_threads -= 1;
-      weak_threads = Math.max(1, Math.ceil(grow_threads * 0.004 / 0.05));
-    }
-    if (grow_threads > 0) ns.exec(WORKERS.PREP_GROW, "home", grow_threads, target_host);
-    if (weak_threads > 0) ns.exec(WORKERS.PREP_WEAK, "home", weak_threads, target_host);
-  } else {
-    // Money is full — weaken only to bring down security
-    const weak_threads = Math.floor(prep_ram / RAM.PREP_WEAK);
-    if (weak_threads > 0) ns.exec(WORKERS.PREP_WEAK, "home", weak_threads, target_host);
-  }
-
+  launch_prep_workers(ns, "home", target_host, prep_ram, needs_grow);
   return { state: "launched" };
 }
 
@@ -469,25 +561,7 @@ function launch_remote_prep(ns, hostname, target_host, available_ram, income_hos
     return { state: "ram-limited" };
   }
 
-  if (needs_grow) {
-    // Server needs money — grow-heavy ratio with weaken to offset security
-    let grow_threads = Math.floor(prep_ram / (RAM.PREP_GROW + RAM.PREP_WEAK / 12));
-    let weak_threads = Math.max(1, Math.ceil(grow_threads * 0.004 / 0.05));
-    while (
-      grow_threads > 0 &&
-      grow_threads * RAM.PREP_GROW + weak_threads * RAM.PREP_WEAK > prep_ram
-    ) {
-      grow_threads -= 1;
-      weak_threads = Math.max(1, Math.ceil(grow_threads * 0.004 / 0.05));
-    }
-    if (grow_threads > 0) ns.exec(WORKERS.PREP_GROW, hostname, grow_threads, target_host);
-    if (weak_threads > 0) ns.exec(WORKERS.PREP_WEAK, hostname, weak_threads, target_host);
-  } else {
-    // Money is full — weaken only to bring down security
-    const weak_threads = Math.floor(prep_ram / RAM.PREP_WEAK);
-    if (weak_threads > 0) ns.exec(WORKERS.PREP_WEAK, hostname, weak_threads, target_host);
-  }
-
+  launch_prep_workers(ns, hostname, target_host, prep_ram, needs_grow);
   return { state: "launched" };
 }
 
@@ -905,10 +979,26 @@ function compute_derived_metrics(ns, hosts, runnable_hosts, hack_targets, launch
     const netWeaken = (prepDiag.totalWeakThreads || 0) * 0.05 - (prepDiag.totalGrowThreads || 0) * 0.004;
     const wt = ns.getWeakenTime(prepDiag.target);
     const secETA = netWeaken > 0 && secOverhead > 0 ? (secOverhead / netWeaken) * (wt / 1000) : (secOverhead > 0 ? Infinity : 0);
-    const moneyDeficit = srv.moneyMax - srv.moneyAvailable;
+
+    // Money ETA — grow is multiplicative, use ns.growthAnalyze for accuracy
+    const growThreads = prepDiag.totalGrowThreads || 0;
     const gt = ns.getGrowTime(prepDiag.target);
-    const growRate = (prepDiag.totalGrowThreads || 0) * 0.004 * srv.moneyMax;
-    const moneyETA = moneyDeficit > 0 && growRate > 0 ? (moneyDeficit / growRate) * (gt / 1000) : (moneyDeficit > 0 ? Infinity : 0);
+    const moneyRatio = srv.moneyMax > 0 ? srv.moneyAvailable / srv.moneyMax : 0;
+    let moneyETA = 0;
+    if (moneyRatio < 0.99 && growThreads > 0) {
+      const currentMoney = Math.max(1, srv.moneyAvailable);
+      const targetMult = (srv.moneyMax * 0.99) / currentMoney;
+      const threadsNeeded = ns.growthAnalyze(prepDiag.target, targetMult);
+      if (Number.isFinite(threadsNeeded) && threadsNeeded > 0) {
+        const cycles = Math.ceil(threadsNeeded / growThreads);
+        moneyETA = cycles * gt / 1000;
+      } else {
+        moneyETA = Infinity;
+      }
+    } else if (moneyRatio < 0.99) {
+      moneyETA = Infinity;
+    }
+
     prepETA = Math.max(secETA, moneyETA);
     if (!Number.isFinite(prepETA)) prepETA = -1; // -1 signals "stalled"
     else prepETA = Math.round(prepETA);

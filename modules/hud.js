@@ -8,6 +8,7 @@
 import {
   CONTRACTS_STATUS_FILE,
   DISABLED_PREFIX,
+  FACTIONS_STATUS_FILE,
   MANAGER_STATUS_FILE,
   MetricsRing,
   MODULE_ROWS,
@@ -254,6 +255,7 @@ function read_metrics(ns) {
     prepped: count_lines(ns, PREPPED_FILE),
     contracts: count_lines(ns, CONTRACTS_FILE),
     stocks: read_stocks_status(ns),
+    factions: read_json(ns, FACTIONS_STATUS_FILE, null),
     purchased: ns.getPurchasedServers().length,
     purchasedLimit: ns.getPurchasedServerLimit(),
   };
@@ -333,6 +335,17 @@ function effectiveness_text(file, state, manager, metrics, refresh_ms, boot_read
       return `${ss.positions}pos ${sign}$${fmt}`;
     }
     return ss.state;
+  }
+
+  if (file === "factions.js") {
+    const fs = metrics.factions;
+    if (!fs) return "idle";
+    const parts = [];
+    if (fs.affordableCount > 0) parts.push(`${fs.affordableCount} buy`);
+    if (fs.needRepCount > 0) parts.push(`${fs.needRepCount} need`);
+    if (fs.pendingInstall > 0) parts.push(`${fs.pendingInstall} pend`);
+    if (fs.workTarget) parts.push(`work:${short_host(fs.workTarget.faction)}`);
+    return parts.length > 0 ? parts.join(" ") : `${fs.factionCount || 0} fac`;
   }
 
   if (file === "hud.js") {

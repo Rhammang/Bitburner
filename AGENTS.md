@@ -22,6 +22,8 @@ progression automation without manual babysitting.
       - `manager_status.json` (manager writes; mode, targets, prepDiag, batchDiag)
       - `server_map.json` (manager writes; scored target list with PREP/HACK state)
       - `contracts_status.txt` (contracts.js writes; discovered coding contracts)
+      - `stocks_status.txt` (stocks.js writes; trading state and portfolio)
+      - `factions_status.json` (factions.js writes; aug survey, work target, purchases)
       - `disabled_<module>.js` flags (cleared on daemon restart)
 
 ## Manager Modes
@@ -61,6 +63,34 @@ progression automation without manual babysitting.
     - Status written to `stocks_status.txt` as `state|{json}`.
     - Disable only for true API-surface mismatch (unexpected environment).
 
+## Contracts Model
+
+    - `contracts.js` auto-discovers and auto-solves 25 coding contract types.
+    - Uses `ns.codingcontract.attempt()` — wrong answers cost attempts so each
+      solver must be correct.
+    - Tracks solved contracts in-session to avoid re-attempts on failures.
+    - Unsupported contract types are logged but skipped (no penalty).
+    - Status written to `contracts_status.txt` (line count = discovered contracts).
+
+## Factions & Augmentation Model
+
+    - `factions.js` requires Singularity API (Source-File 4). If unavailable,
+      the module exits silently on first cycle.
+    - Auto-accepts pending faction invitations (respects `skipFactions` config).
+    - Surveys augmentations across all joined factions, deduplicating by picking
+      the faction where the player has the most rep.
+    - Works for the faction offering the most valuable unaffordable augmentation.
+    - Buys augmentations in descending price order (most expensive first) to
+      minimize the compounding 1.9× price multiplier.
+    - Does NOT auto-install — the player decides when to reset.
+    - Config keys (`data/config.json` → `factions` section):
+      - `autoBuy` (bool, default true) — auto-purchase affordable augs
+      - `cashReserve` (number, default $50M) — minimum cash to keep
+      - `workFocus` ("hacking"|"field"|"security", default "hacking")
+      - `skipFactions` (string[], default []) — factions to ignore
+    - Status written to `factions_status.json` (JSON with aug counts, work
+      target, pending installs, top affordable/need-rep lists).
+
 ## Known Best Tactics (Codebase-Specific)
 
     - Protect early-game income path first (root + manager) before optional modules.
@@ -98,7 +128,6 @@ progression automation without manual babysitting.
 
 ## Future Plans
 
-    - Automate factions/augs/install cadence.
     - Add persistent metrics history for cross-restart trend analysis.
     - Explore adaptive hackPercent tuning based on extraction ratio trends.
 
@@ -173,9 +202,9 @@ samples the manager collects each cycle.
 
 ## Next Modification
 
-    - Automate factions/augs/install cadence.
     - Add persistent metrics history (optional file-backed ring buffer for
       cross-restart trend analysis).
+    - Adaptive hackPercent tuning based on extraction ratio trends.
 
 ## AI Guardrails
 
@@ -199,6 +228,10 @@ samples the manager collects each cycle.
        both HUD trend analysis and diag.js reports.
    11. MetricsRing is in-memory only (no persistence). Trends reset on module
        restart, which is acceptable.
+   12. Factions module must never auto-install augmentations. The player decides
+       when to reset.
+   13. Contract solvers must be correct — wrong answers cost attempts. Test
+       solver logic carefully before adding new types.
 
 ## Official Resources
 
