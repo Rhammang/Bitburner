@@ -64,9 +64,9 @@ export const BATCH_WORKER_FILES = [
 ];
 
 export const WORKER_RAM_COSTS = {
-  PREP_WEAK: 1.8,  // 1.6 base + 0.15 weaken + 0.05 serverExists
-  PREP_GROW: 1.8,  // 1.6 base + 0.15 grow + 0.05 serverExists
-  PREP_HACK: 1.75, // 1.6 base + 0.1 hack + 0.05 serverExists
+  PREP_WEAK: 1.85, // 1.6 base + 0.15 weaken + 0.05 serverExists + 0.05 hasRootAccess
+  PREP_GROW: 1.85, // 1.6 base + 0.15 grow + 0.05 serverExists + 0.05 hasRootAccess
+  PREP_HACK: 1.80, // 1.6 base + 0.1 hack + 0.05 serverExists + 0.05 hasRootAccess
   HACK: 1.7,       // 1.6 base + 0.1 hack
   WEAK: 1.75,      // 1.6 base + 0.15 weaken
   GROW: 1.75,      // 1.6 base + 0.15 grow
@@ -74,11 +74,11 @@ export const WORKER_RAM_COSTS = {
 
 export const WORKER_SOURCES = {
   [WORKERS.PREP_WEAK]:
-    "export async function main(ns) { const t = ns.args[0]; while (true) { if (!ns.serverExists(t)) return; await ns.weaken(t); } }",
+    "export async function main(ns) { const t = ns.args[0]; while (true) { if (!ns.serverExists(t) || !ns.hasRootAccess(t)) return; await ns.weaken(t); } }",
   [WORKERS.PREP_GROW]:
-    "export async function main(ns) { const t = ns.args[0]; while (true) { if (!ns.serverExists(t)) return; await ns.grow(t); } }",
+    "export async function main(ns) { const t = ns.args[0]; while (true) { if (!ns.serverExists(t) || !ns.hasRootAccess(t)) return; await ns.grow(t); } }",
   [WORKERS.PREP_HACK]:
-    "export async function main(ns) { const t = ns.args[0]; while (true) { if (!ns.serverExists(t)) return; await ns.hack(t); } }",
+    "export async function main(ns) { const t = ns.args[0]; while (true) { if (!ns.serverExists(t) || !ns.hasRootAccess(t)) return; await ns.hack(t); } }",
   [WORKERS.HACK]:
     "export async function main(ns) { if (ns.args[1] > 0) await ns.sleep(ns.args[1]); await ns.hack(ns.args[0]); }",
   [WORKERS.WEAK]:

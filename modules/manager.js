@@ -954,7 +954,7 @@ function pick_prep_income_target(ns, hack_targets, server_map = [], prep_hostnam
     // If cached target isn't a hack target, it may be a fallback — keep it if it still exists
     if (!still_hack && cached_income_target !== prep_hostname) {
       try {
-        if (ns.serverExists(cached_income_target)) return cached_income_target;
+        if (ns.serverExists(cached_income_target) && ns.hasRootAccess(cached_income_target)) return cached_income_target;
       } catch { /* fall through */ }
     }
     cached_income_target = "";
