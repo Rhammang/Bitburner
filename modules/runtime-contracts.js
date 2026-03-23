@@ -89,7 +89,7 @@ export const WORKER_SOURCES = {
 
 export const DEPLOY_LITE_WORKER_FILE = "/w-lite-cycle.js";
 export const DEPLOY_LITE_WORKER_SOURCE =
-  "export async function main(ns) { const target = ns.args[0]; while (true) { if (!ns.serverExists(target)) return; const maxMoney = ns.getServerMaxMoney(target); const money = ns.getServerMoneyAvailable(target); const minSec = ns.getServerMinSecurityLevel(target); const sec = ns.getServerSecurityLevel(target); if (sec > minSec + 5) { await ns.weaken(target); } else if (money < maxMoney * 0.85) { await ns.grow(target); } else { await ns.hack(target); } } }";
+  "export async function main(ns) { const target = ns.args[0]; while (true) { if (!ns.serverExists(target) || !ns.hasRootAccess(target)) return; const maxMoney = ns.getServerMaxMoney(target); const money = ns.getServerMoneyAvailable(target); const minSec = ns.getServerMinSecurityLevel(target); const sec = ns.getServerSecurityLevel(target); if (sec > minSec + 5) { await ns.weaken(target); } else if (money < maxMoney * 0.85) { await ns.grow(target); } else { await ns.hack(target); } } }";
 
 export const CORE_MODULES = [
   { file: MODULE_FILES.ROOT, desc: "Root Access Manager", interval: 5000, bootCritical: true },

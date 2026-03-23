@@ -37,9 +37,10 @@ export function autocomplete() {
 export async function main(ns) {
   ns.disableLog("ALL");
   const json_mode = ns.args.includes("--json");
+  const worker_conflicts = collect_worker_target_conflicts(ns);
 
   if (json_mode) {
-    const data = build_json_snapshot(ns);
+    const data = build_json_snapshot(ns, worker_conflicts);
     ns.tprint(JSON.stringify(data, null, 2));
     return;
   }
@@ -105,12 +106,23 @@ export async function main(ns) {
       ns.tprint(`  Batches launched: ${mgr.launchedBatches || 0}  |  hackPercent: ${mgr.hackPercent ? Math.round(mgr.hackPercent * 100) + "%" : "??"}`);
       ns.tprint(`  Targets: ${mgr.hackTargets || 0} hack / ${mgr.prepTargets || 0} prep`);
       ns.tprint(`  Hosts: ${mgr.runnableHostCount || 0}/${mgr.hostCount || 0}  RAM: ${fmt_ram(mgr.availableRam)}`);
+      const active_batch_targets = Array.isArray(mgr.activeBatchTargets) ? mgr.activeBatchTargets : [];
+      if (active_batch_targets.length > 0) {
+        const shown = active_batch_targets.slice(0, 5);
+        ns.tprint(`  Active batch targets: ${shown.join(", ")}${active_batch_targets.length > shown.length ? ` ... +${active_batch_targets.length - shown.length}` : ""}`);
+      }
       if (mgr.batchDiag) {
-        ns.tprint(`  Batch diag: ${mgr.batchDiag.state || "unknown"}  | blocked=${mgr.batchDiag.blockedTargets || 0} failed=${mgr.batchDiag.failedExecs || 0}`);
+        ns.tprint(`  Batch diag: ${mgr.batchDiag.state || "unknown"}  | blocked=${mgr.batchDiag.blockedTargets || 0} failed=${mgr.batchDiag.failedExecs || 0} active=${mgr.batchDiag.activeBatchTargets || 0}`);
         const batch_targets = Array.isArray(mgr.batchDiag.targets) ? mgr.batchDiag.targets : [];
         for (const target of batch_targets.slice(0, 5)) {
-          ns.tprint(`    Target ${pad(target.target, 18)} launched=${target.launched || 0} reason=${target.reason || "unknown"}`);
+          ns.tprint(
+            `    Target ${pad(target.target, 18)} launched=${target.launched || 0} active=${target.activeBatches || 0} reason=${target.reason || "unknown"}`
+            + ` minDelay=${fmt_ms(target.minDelayMs)} ram=${fmt_ram(target.templateRam || 0)} clamps=${target.clampedJobs || 0}`
+          );
         }
+      }
+      if (worker_conflicts.overlapTargets.length > 0) {
+        ns.tprint(`  Prep/Batch overlap: ${worker_conflicts.overlapTargets.join(", ")}`);
       }
     }
   }
@@ -278,11 +290,17 @@ export async function main(ns) {
     ns.tprint(`    Batch Slots:        ${pct(dm.batchSlotUtilization)}`);
     ns.tprint(`    Target Coverage:    ${pct(dm.targetCoverage)}`);
     ns.tprint(`    Host Fragmentation: ${pct(dm.hostFragmentation)}`);
+    ns.tprint(`    Batch RAM Demand:   ${fmt_ram(dm.batchRamDemand || 0)}`);
+    ns.tprint(`    Batch RAM Pressure: ${fmt_ratio(dm.batchRamPressure)}`);
 
     ns.tprint("  HEALTH");
     ns.tprint(`    Batch Success:      ${pct(dm.batchSuccessRate)}     ${health_tag(dm.batchSuccessRate, METRICS_THRESHOLDS.batchSuccessRate)}`);
     ns.tprint(`    Exec Failures:      ${pct(dm.execFailureRatio)}     ${health_tag_inv(dm.execFailureRatio, METRICS_THRESHOLDS.execFailureRatio)}`);
     ns.tprint(`    Prep Stability:     ${pct(dm.prepStability)}     ${health_tag(dm.prepStability, METRICS_THRESHOLDS.prepStability)}`);
+    ns.tprint(`    Timing Clamp:       ${pct(dm.timingClampRatio)}`);
+    ns.tprint(`    Avg Min Delay:      ${fmt_ms(dm.avgMinDelayMs)}`);
+    ns.tprint(`    Avg Base Gap:       ${fmt_ms(dm.avgBaseGapMs)}`);
+    ns.tprint(`    Prep/Batch Overlap: ${dm.prepBatchOverlapTargets || 0} target(s)`);
     ns.tprint(`    System Score:       ${score_letter(dm.systemScore)} (${(dm.systemScore * 100).toFixed(0)}%)`);
 
     ns.tprint("  PER-TARGET HEALTH");
@@ -325,16 +343,12 @@ export async function main(ns) {
 
     // Pipeline pressure estimate
     if (mgr && mgr.batchDiag) {
-      const hackTargets = mgr.hackTargets || 0;
-      const bpw = 5; // default batchesPerWindow
-      const avgBatchRam = 1.7 * 4 + 1.75 * 8; // rough estimate per batch
-      const demand = hackTargets * bpw * avgBatchRam;
-      const supply = mgr.availableRam || 0;
-      const pressure = supply > 0 ? demand / supply : 0;
+      const demand = dm.batchRamDemand || 0;
+      const pressure = dm.batchRamPressure || 0;
       ns.tprint("  PIPELINE");
-      ns.tprint(`    Pressure index:     ${pressure.toFixed(2)}  (demand/supply, 0.5-1.5 healthy)`);
-      ns.tprint(`    Available RAM:      ${fmt_ram(supply)}`);
-      ns.tprint(`    Est. demand:        ${fmt_ram(demand)}  (${hackTargets} targets × ${bpw} batches)`);
+      ns.tprint(`    Pressure index:     ${fmt_ratio(pressure)}  (template demand / runnable RAM)`);
+      ns.tprint(`    Batch RAM demand:   ${fmt_ram(demand)}`);
+      ns.tprint(`    Free RAM now:       ${fmt_ram(mgr.availableRam || 0)}  (post-scheduling)`);
     }
 
     // Income-RAM elasticity note
@@ -403,7 +417,7 @@ export async function main(ns) {
   ns.tprint(`${sep}`);
 }
 
-function build_json_snapshot(ns) {
+function build_json_snapshot(ns, worker_conflicts = collect_worker_target_conflicts(ns)) {
   const mgr = read_json(ns, MANAGER_STATUS_FILE, null);
   return {
     timestamp: new Date().toISOString(),
@@ -414,6 +428,7 @@ function build_json_snapshot(ns) {
     income: { moneyDelta: mgr?.derivedMetrics?.income || 0, scriptApi: ns.getScriptIncome()[0] },
     stocks: parse_stocks_status(ns),
     factions: read_json(ns, FACTIONS_STATUS_FILE, null),
+    workerConflicts: worker_conflicts,
     ram: {
       homeMax: ns.getServerMaxRam("home"),
       homeUsed: ns.getServerUsedRam("home"),
@@ -458,6 +473,36 @@ function read_lines(ns, path) {
   return raw.split(/\r?\n/).filter(Boolean);
 }
 
+function collect_worker_target_conflicts(ns) {
+  const prep_targets = new Set();
+  const batch_targets = new Set();
+  const all_hosts = ["home", ...read_lines(ns, ROOTED_FILE), ...ns.getPurchasedServers()];
+  const seen = new Set();
+
+  for (const host of all_hosts) {
+    if (seen.has(host)) continue;
+    seen.add(host);
+    if (!ns.serverExists(host) || !ns.hasRootAccess(host)) continue;
+    for (const proc of ns.ps(host)) {
+      const target = proc.args.length > 0 ? String(proc.args[0]) : "";
+      if (!target) continue;
+      const normalized = normalize_script_filename(proc.filename);
+      if (PREP_SCRIPTS.has(normalized)) prep_targets.add(target);
+      if (BATCH_SCRIPTS.has(normalized)) batch_targets.add(target);
+    }
+  }
+
+  const overlapTargets = Array.from(prep_targets)
+    .filter((target) => batch_targets.has(target))
+    .sort();
+
+  return {
+    prepTargets: Array.from(prep_targets).sort(),
+    batchTargets: Array.from(batch_targets).sort(),
+    overlapTargets,
+  };
+}
+
 function pad(str, len) {
   return String(str || "").padEnd(len);
 }
@@ -487,6 +532,19 @@ function fmt_income(per_sec) {
   if (val >= 1e6) return `$${(val / 1e6).toFixed(2)}m/s`;
   if (val >= 1e3) return `$${(val / 1e3).toFixed(1)}k/s`;
   return `$${val.toFixed(0)}/s`;
+}
+
+function fmt_ms(value) {
+  const val = Number(value);
+  if (!Number.isFinite(val)) return "n/a";
+  if (val >= 1000) return `${(val / 1000).toFixed(2)}s`;
+  return `${Math.round(val)}ms`;
+}
+
+function fmt_ratio(value) {
+  const val = Number(value);
+  if (!Number.isFinite(val)) return "n/a";
+  return val.toFixed(2);
 }
 
 function fmt_eta(seconds) {

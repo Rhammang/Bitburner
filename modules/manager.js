@@ -17,6 +17,7 @@ import {
   WORKER_RAM_COSTS,
   WORKER_SOURCES,
   WORKERS,
+  is_batch_worker,
   build_script_target_counts,
   get_worker_kind,
   is_prep_worker,
@@ -42,7 +43,7 @@ const argsSchema = [
   ["verbose", false],
 ];
 
-let batch_schedule = {}; // { target: [landing_time_ms, ...] }
+let batch_schedule = {}; // { target: [{ baseLanding, releaseAt }] }
 let worker_sync_cache = {};
 let last_server_map_payload = "";
 let last_server_map_write_ms = 0;
@@ -101,10 +102,10 @@ export async function main(ns) {
     prev_money = player.money;
     prev_money_time = cycle_start;
 
-    const server_map = build_server_map(ns, player);
-    await write_server_map_if_needed(ns, server_map, cycle_start);
-
     cleanup_schedule();
+    const active_batch_targets = compute_active_batch_targets(ns);
+    const server_map = build_server_map(ns, player, active_batch_targets);
+    await write_server_map_if_needed(ns, server_map, cycle_start);
 
     const prep_targets = server_map.filter((s) => s.hasAdminRights && s.state === "PREP");
     const hack_targets = server_map.filter((s) => s.hasAdminRights && s.state === "HACK");
@@ -142,6 +143,7 @@ export async function main(ns) {
     apply_home_reserve(hosts, options.homeReserve);
     const runnable_hosts = hosts.filter((h) => h.ram >= MIN_EXEC_RAM);
     sync_workers_to_hosts(ns, runnable_hosts, cycle_start);
+    const runnable_ram_before_launch = runnable_hosts.reduce((acc, h) => acc + h.ram, 0);
 
     cycle_failed_execs = 0;
     let launched_batches = 0;
@@ -152,6 +154,7 @@ export async function main(ns) {
       batch_results.push(result);
     }
 
+    const active_batch_targets_after = compute_active_batch_targets(ns);
     const available_ram = runnable_hosts.reduce((acc, h) => acc + h.ram, 0);
     const batchDiag = build_batch_diag(
       hack_targets,
@@ -160,12 +163,13 @@ export async function main(ns) {
       cycle_failed_execs,
       runnable_hosts,
       hosts,
-      available_ram
+      available_ram,
+      active_batch_targets_after
     );
     const derivedMetrics = compute_derived_metrics(
       ns, hosts, runnable_hosts, hack_targets,
       launched_batches, cycle_failed_execs, batch_results,
-      prepDiag, options
+      prepDiag, options, runnable_ram_before_launch
     );
     adapt_hack_percent(options, derivedMetrics, hack_targets.length > 0);
     await write_manager_status(ns, {
@@ -178,6 +182,7 @@ export async function main(ns) {
       hackTargets: hack_targets.length,
       launchedBatches: launched_batches,
       scheduledTargets: Object.keys(batch_schedule).length,
+      activeBatchTargets: Array.from(active_batch_targets_after).sort(),
       hackPercent: Math.round(options.hackPercent * 1000) / 1000,
       homeReserve: options.homeReserve,
       prepHostCount: prep_target ? prep_hosts.length : 0,
@@ -268,7 +273,7 @@ function apply_home_reserve(hosts, reserve) {
   home.ram = Math.max(0, home.ram - reserve);
 }
 
-function build_server_map(ns, player) {
+function build_server_map(ns, player, active_batch_targets = new Set()) {
   return list_servers(ns)
     .filter((s) => !s.startsWith("pserv-"))
     .map((s) => ns.getServer(s))
@@ -278,10 +283,10 @@ function build_server_map(ns, player) {
       hasAdminRights: so.hasAdminRights,
       maxMoney: so.moneyMax,
       minDifficulty: so.minDifficulty,
-      state:
-        so.moneyAvailable >= so.moneyMax * 0.99 && so.hackDifficulty <= so.minDifficulty + 0.5
-          ? "HACK"
-          : "PREP",
+      state: active_batch_targets.has(so.hostname)
+        || (so.moneyAvailable >= so.moneyMax * 0.99 && so.hackDifficulty <= so.minDifficulty + 0.5)
+        ? "HACK"
+        : "PREP",
       score: so.moneyMax / ns.getWeakenTime(so.hostname),
     }))
     .sort((a, b) => b.score - a.score);
@@ -290,11 +295,31 @@ function build_server_map(ns, player) {
 function cleanup_schedule() {
   const now = Date.now();
   for (const target of Object.keys(batch_schedule)) {
-    batch_schedule[target] = batch_schedule[target].filter((time) => time > now);
+    batch_schedule[target] = batch_schedule[target]
+      .filter((reservation) => reservation && reservation.releaseAt > now)
+      .sort((a, b) => a.baseLanding - b.baseLanding);
     if (batch_schedule[target].length === 0) {
       delete batch_schedule[target];
     }
   }
+}
+
+function compute_active_batch_targets(ns) {
+  const active = new Set();
+
+  for (const [target, reservations] of Object.entries(batch_schedule)) {
+    if (Array.isArray(reservations) && reservations.length > 0) active.add(target);
+  }
+
+  for (const hostname of get_hosts(ns)) {
+    for (const proc of ns.ps(hostname)) {
+      if (!is_batch_worker(proc.filename)) continue;
+      const target = proc.args.length > 0 ? String(proc.args[0]) : "";
+      if (target) active.add(target);
+    }
+  }
+
+  return active;
 }
 
 async function run_prep_workers(ns, target, income_target, home_reserve, prep_hosts, hybrid_mode) {
@@ -739,19 +764,34 @@ function stop_prep_workers(ns) {
 
 function launch_batches_for_target(ns, target, hosts, options) {
   let launched = 0;
-  const window_end = Date.now() + options.scheduleAheadMs;
   const template = calculate_batch_template(ns, target, options);
   if (!template) {
-    return { target: target.hostname, launched, reason: "no-template" };
+    return {
+      target: target.hostname,
+      launched,
+      reason: "no-template",
+      activeBatches: (batch_schedule[target.hostname] || []).length,
+      templateRam: 0,
+      plannedJobs: 0,
+      clampedJobs: 0,
+      minDelayMs: null,
+      baseGapMs: null,
+    };
   }
   if (!batch_schedule[target.hostname]) batch_schedule[target.hostname] = [];
+  const earliest_base_landing = Date.now() + template.weakenTime + options.spacingMs;
+  const window_end = earliest_base_landing + options.scheduleAheadMs;
+  const template_ram = calculate_template_ram(ns, template);
   let reason = "no-capacity";
+  let plannedJobs = 0;
+  let clampedJobs = 0;
+  let minDelayMs = Infinity;
 
   for (let i = 0; i < options.batchesPerWindow; i++) {
-    const landing_time = find_next_available_window(target.hostname, options.spacingMs);
+    const landing_time = find_next_available_window(target.hostname, options.spacingMs, earliest_base_landing);
     if (landing_time > window_end) {
       reason = "window-full";
-      continue;
+      break;
     }
 
     const jobs = build_batch_jobs(ns, template, target.hostname, landing_time, options.spacingMs);
@@ -769,24 +809,39 @@ function launch_batches_for_target(ns, target, hosts, options) {
       break;
     }
 
-    batch_schedule[target.hostname].push(
-      landing_time - options.spacingMs,
-      landing_time,
-      landing_time + options.spacingMs,
-      landing_time + 2 * options.spacingMs
-    );
+    batch_schedule[target.hostname].push({
+      baseLanding: landing_time,
+      releaseAt: landing_time + 2 * options.spacingMs,
+    });
+    batch_schedule[target.hostname].sort((a, b) => a.baseLanding - b.baseLanding);
     launched += 1;
+    plannedJobs += jobs.length;
+    clampedJobs += jobs.filter((job) => job.clamped).length;
+    for (const job of jobs) {
+      minDelayMs = Math.min(minDelayMs, job.delay);
+    }
     reason = launched >= options.batchesPerWindow ? "launched" : "partial";
   }
 
-  return { target: target.hostname, launched, reason };
+  const reservations = batch_schedule[target.hostname] || [];
+  return {
+    target: target.hostname,
+    launched,
+    reason,
+    activeBatches: reservations.length,
+    templateRam: Math.round(template_ram * 100) / 100,
+    plannedJobs,
+    clampedJobs,
+    minDelayMs: Number.isFinite(minDelayMs) ? Math.round(minDelayMs) : null,
+    baseGapMs: average_base_gap_ms(reservations),
+  };
 }
 
-function find_next_available_window(target, spacing_ms) {
-  const now = Date.now();
-  const schedule = batch_schedule[target] || [];
-  const last_landing_time = Math.max(now, ...schedule.filter((t) => t).concat(now));
-  return last_landing_time + spacing_ms * 4;
+function find_next_available_window(target, spacing_ms, earliest_base_landing) {
+  const reservations = batch_schedule[target] || [];
+  if (reservations.length === 0) return earliest_base_landing;
+  const last_base_landing = Math.max(...reservations.map((reservation) => reservation.baseLanding));
+  return Math.max(earliest_base_landing, last_base_landing + spacing_ms * 4);
 }
 
 function calculate_batch_template(ns, target, options) {
@@ -823,44 +878,79 @@ function calculate_batch_template(ns, target, options) {
   };
 }
 
+function calculate_template_ram(ns, template) {
+  const ar = get_actual_ram(ns);
+  return template.hackThreads * ar.bHack
+    + template.weak1Threads * ar.bWeak
+    + template.growThreads * ar.bGrow
+    + template.weak2Threads * ar.bWeak;
+}
+
 function build_batch_jobs(ns, template, target, landing_time, spacing_ms) {
   const now = Date.now();
   const ar = get_actual_ram(ns);
   return [
-    {
-      script: WORKERS.HACK,
-      threads: template.hackThreads,
-      ram: ar.bHack,
-      delay: Math.max(0, landing_time - spacing_ms - template.hackTime - now),
-      target,
-    },
-    {
-      script: WORKERS.WEAK,
-      threads: template.weak1Threads,
-      ram: ar.bWeak,
-      delay: Math.max(0, landing_time - template.weakenTime - now),
-      target,
-    },
-    {
-      script: WORKERS.GROW,
-      threads: template.growThreads,
-      ram: ar.bGrow,
-      delay: Math.max(0, landing_time + spacing_ms - template.growTime - now),
-      target,
-    },
-    {
-      script: WORKERS.WEAK,
-      threads: template.weak2Threads,
-      ram: ar.bWeak,
-      delay: Math.max(0, landing_time + spacing_ms * 2 - template.weakenTime - now),
-      target,
-    },
+    build_batch_job(
+      WORKERS.HACK,
+      template.hackThreads,
+      ar.bHack,
+      landing_time - spacing_ms - template.hackTime - now,
+      target
+    ),
+    build_batch_job(
+      WORKERS.WEAK,
+      template.weak1Threads,
+      ar.bWeak,
+      landing_time - template.weakenTime - now,
+      target
+    ),
+    build_batch_job(
+      WORKERS.GROW,
+      template.growThreads,
+      ar.bGrow,
+      landing_time + spacing_ms - template.growTime - now,
+      target
+    ),
+    build_batch_job(
+      WORKERS.WEAK,
+      template.weak2Threads,
+      ar.bWeak,
+      landing_time + spacing_ms * 2 - template.weakenTime - now,
+      target
+    ),
   ];
+}
+
+function build_batch_job(script, threads, ram, rawDelay, target) {
+  return {
+    script,
+    threads,
+    ram,
+    rawDelay,
+    delay: Math.max(0, rawDelay),
+    clamped: rawDelay <= 0,
+    target,
+  };
 }
 
 function safe_threads(value) {
   if (!Number.isFinite(value) || value < 1) return 1;
   return Math.max(1, Math.floor(value));
+}
+
+function average_base_gap_ms(reservations) {
+  if (!Array.isArray(reservations) || reservations.length < 2) return null;
+  const ordered = reservations
+    .map((reservation) => reservation.baseLanding)
+    .filter((value) => Number.isFinite(value))
+    .sort((a, b) => a - b);
+  if (ordered.length < 2) return null;
+
+  let total_gap = 0;
+  for (let i = 1; i < ordered.length; i++) {
+    total_gap += ordered[i] - ordered[i - 1];
+  }
+  return Math.round(total_gap / (ordered.length - 1));
 }
 
 function plan_job_allocations(jobs, hosts) {
@@ -951,7 +1041,7 @@ function pick_prep_income_target(ns, hack_targets, server_map = [], prep_hostnam
         if (money_ratio >= 0.95) return cached_income_target;
       } catch { /* fall through */ }
     }
-    // If cached target isn't a hack target, it may be a fallback — keep it if it still exists
+    // If cached target isn't a hack target, it may be a fallback — keep it if it's still rooted
     if (!still_hack && cached_income_target !== prep_hostname) {
       try {
         if (ns.serverExists(cached_income_target) && ns.hasRootAccess(cached_income_target)) return cached_income_target;
@@ -1015,7 +1105,7 @@ function capture_prep_host_diag(ns, diag, hostname, action, expected_count, avai
   }
 }
 
-function build_batch_diag(hack_targets, batch_results, launched_batches, failed_execs, runnable_hosts, hosts, available_ram) {
+function build_batch_diag(hack_targets, batch_results, launched_batches, failed_execs, runnable_hosts, hosts, available_ram, active_batch_targets) {
   const blockedTargets = batch_results.filter((result) => result.reason !== "launched" && result.reason !== "partial").length;
   const skippedTemplates = batch_results.filter((result) => result.reason === "no-template").length;
   let state = "idle";
@@ -1032,11 +1122,12 @@ function build_batch_diag(hack_targets, batch_results, launched_batches, failed_
     runnableHostCount: runnable_hosts.length,
     hostCount: hosts.length,
     availableRam: Math.floor(available_ram),
+    activeBatchTargets: active_batch_targets.size,
     targets: batch_results.slice(0, MAX_DIAG_TARGETS),
   };
 }
 
-function compute_derived_metrics(ns, hosts, runnable_hosts, hack_targets, launched_batches, failed_execs, batch_results, prepDiag, options) {
+function compute_derived_metrics(ns, hosts, runnable_hosts, hack_targets, launched_batches, failed_execs, batch_results, prepDiag, options, runnable_ram_before_launch) {
   const income = money_delta_income;
 
   // RAM totals
@@ -1067,16 +1158,25 @@ function compute_derived_metrics(ns, hosts, runnable_hosts, hack_targets, launch
 
   // Thread census from live processes
   let hackThreads = 0, growThreads = 0, weakThreads = 0;
+  const prepTargets = new Set();
+  const batchTargets = new Set();
   for (const h of hosts) {
     for (const proc of ns.ps(h.hostname)) {
       const kind = get_worker_kind(proc.filename);
       if (kind === "hack") hackThreads += proc.threads;
       else if (kind === "grow") growThreads += proc.threads;
       else if (kind === "weak") weakThreads += proc.threads;
+
+      const target = proc.args.length > 0 ? String(proc.args[0]) : "";
+      if (target) {
+        if (is_prep_worker(proc.filename)) prepTargets.add(target);
+        if (is_batch_worker(proc.filename)) batchTargets.add(target);
+      }
     }
   }
   const totalThreads = hackThreads + growThreads + weakThreads;
   const weakenTax = totalThreads > 0 ? weakThreads / totalThreads : 0;
+  const prepBatchOverlapTargets = Array.from(prepTargets).filter((target) => batchTargets.has(target)).length;
 
   // Utilization
   const ramUtilization = totalMaxRam > 0 ? totalUsedRam / totalMaxRam : 0;
@@ -1086,6 +1186,26 @@ function compute_derived_metrics(ns, hosts, runnable_hosts, hack_targets, launch
   const scheduledTargets = Object.keys(batch_schedule).length;
   const targetCoverage = hack_targets.length > 0 ? scheduledTargets / hack_targets.length : 0;
   const hostFragmentation = totalFreeRam > 0 ? strandedRam / totalFreeRam : 0;
+  const totalPlannedJobs = batch_results.reduce((sum, result) => sum + (result.plannedJobs || 0), 0);
+  const totalClampedJobs = batch_results.reduce((sum, result) => sum + (result.clampedJobs || 0), 0);
+  const timingClampRatio = totalPlannedJobs > 0 ? totalClampedJobs / totalPlannedJobs : 0;
+  const minDelayValues = batch_results
+    .map((result) => result.minDelayMs)
+    .filter((value) => Number.isFinite(value));
+  const avgMinDelayMs = minDelayValues.length > 0
+    ? Math.round(minDelayValues.reduce((sum, value) => sum + value, 0) / minDelayValues.length)
+    : null;
+  const baseGapValues = batch_results
+    .map((result) => result.baseGapMs)
+    .filter((value) => Number.isFinite(value));
+  const avgBaseGapMs = baseGapValues.length > 0
+    ? Math.round(baseGapValues.reduce((sum, value) => sum + value, 0) / baseGapValues.length)
+    : null;
+  const batchRamDemand = batch_results.reduce(
+    (sum, result) => sum + (result.templateRam || 0) * options.batchesPerWindow,
+    0
+  );
+  const batchRamPressure = runnable_ram_before_launch > 0 ? batchRamDemand / runnable_ram_before_launch : 0;
 
   // Health
   const blockedTargets = batch_results.filter((r) => r.reason !== "launched" && r.reason !== "partial").length;
@@ -1095,7 +1215,7 @@ function compute_derived_metrics(ns, hosts, runnable_hosts, hack_targets, launch
   const blockedRatio = hack_targets.length > 0 ? blockedTargets / hack_targets.length : 0;
 
   // Prep stability
-  const totalPrepHosts = (prepDiag.unchangedHosts || 0) + (prepDiag.adjustedHosts || 0) + (prepDiag.ramLimitedHosts || 0);
+  const totalPrepHosts = prepDiag.prepHostCount || 0;
   const prepStability = totalPrepHosts > 0 ? (prepDiag.unchangedHosts || 0) / totalPrepHosts : 1;
 
   // Per-target health
@@ -1165,10 +1285,16 @@ function compute_derived_metrics(ns, hosts, runnable_hosts, hack_targets, launch
     batchSlotUtilization: Math.round(batchSlotUtilization * 1000) / 1000,
     targetCoverage: Math.round(targetCoverage * 1000) / 1000,
     hostFragmentation: Math.round(hostFragmentation * 1000) / 1000,
+    timingClampRatio: Math.round(timingClampRatio * 1000) / 1000,
+    avgMinDelayMs,
+    avgBaseGapMs,
+    batchRamDemand: Math.round(batchRamDemand * 100) / 100,
+    batchRamPressure: Math.round(batchRamPressure * 1000) / 1000,
     batchSuccessRate: Math.round(batchSuccessRate * 1000) / 1000,
     execFailureRatio: Math.round(execFailureRatio * 1000) / 1000,
     blockedRatio: Math.round(blockedRatio * 1000) / 1000,
     prepStability: Math.round(prepStability * 1000) / 1000,
+    prepBatchOverlapTargets,
     prepETA,
     systemScore: Math.round(systemScore * 1000) / 1000,
     totalThreads,
