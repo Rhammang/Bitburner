@@ -419,16 +419,19 @@ async function run_prep_workers(ns, target, income_target, home_reserve, prep_ho
 }
 
 function get_prep_hosts(ns, hybrid_mode) {
-  const hosts = get_hosts(ns).sort((a, b) => sort_hosts(
-    {
-      hostname: a,
-      ram: ns.getServerMaxRam(a) - ns.getServerUsedRam(a),
-    },
-    {
-      hostname: b,
-      ram: ns.getServerMaxRam(b) - ns.getServerUsedRam(b),
-    }
-  ));
+  const { weak: min_worker_ram } = get_actual_ram(ns);
+  const hosts = get_hosts(ns)
+    .filter((h) => h === "home" || ns.getServerMaxRam(h) >= min_worker_ram)
+    .sort((a, b) => sort_hosts(
+      {
+        hostname: a,
+        ram: ns.getServerMaxRam(a) - ns.getServerUsedRam(a),
+      },
+      {
+        hostname: b,
+        ram: ns.getServerMaxRam(b) - ns.getServerUsedRam(b),
+      }
+    ));
 
   // In pure PREP mode, use all hosts (nothing to batch on).
   // In HYBRID mode, reserve purchased servers for batch workers.
