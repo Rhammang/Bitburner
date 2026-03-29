@@ -387,8 +387,31 @@ export async function main(ns) {
     ns.tprint(`  Factions joined: ${factions.factionCount || 0}  |  Updated: ${factions.timestamp || "unknown"}`);
     ns.tprint(`  Augs available: ${factions.totalAugsAvailable || 0}  affordable: ${factions.affordableCount || 0}  need rep: ${factions.needRepCount || 0}`);
     ns.tprint(`  Pending install: ${factions.pendingInstall || 0}`);
+    if (typeof factions.tor === "boolean") {
+      const missing_programs = Array.isArray(factions.missingPrograms) ? factions.missingPrograms : [];
+      ns.tprint(`  TOR: ${factions.tor ? "yes" : "no"}  |  Missing programs: ${missing_programs.length}`);
+    }
     if (factions.joined && factions.joined.length > 0) {
       ns.tprint(`  Recently joined: ${factions.joined.join(", ")}`);
+    }
+    if (factions.programsPurchased && factions.programsPurchased.length > 0) {
+      ns.tprint(`  Recent program buys: ${factions.programsPurchased.join(", ")}`);
+    }
+    if (factions.backdoor) {
+      ns.tprint(`  Backdoors: ${factions.backdoor.installed || 0}/${factions.backdoor.total || 0} installed  |  Remaining: ${factions.backdoor.remaining || 0}`);
+      if (factions.backdoor.lastInstalled) {
+        ns.tprint(`  Recently backdoored: ${factions.backdoor.lastInstalled}`);
+      }
+      if (factions.backdoor.nextEligible) {
+        const next = factions.backdoor.nextEligible;
+        ns.tprint(`  Next eligible backdoor: ${next.server} (${next.faction || "unknown"}) req hack ${fmt_money(next.requiredHackingLevel || 0)}`);
+      } else if (factions.backdoor.nextPending) {
+        const pending = factions.backdoor.nextPending;
+        ns.tprint(`  Next pending backdoor: ${pending.server} rooted=${pending.rooted ? "yes" : "no"} req hack ${fmt_money(pending.requiredHackingLevel || 0)}`);
+      }
+      if (factions.backdoor.error) {
+        ns.tprint(`  Backdoor status: ${factions.backdoor.error}`);
+      }
     }
     if (factions.purchased && factions.purchased.length > 0) {
       ns.tprint(`  Recently purchased: ${factions.purchased.join(", ")}`);
@@ -397,6 +420,17 @@ export async function main(ns) {
       const wt = factions.workTarget;
       ns.tprint(`  Working for: ${wt.faction}  (aug: ${wt.aug})`);
       ns.tprint(`    Rep: ${fmt_money(wt.repCurrent)} / ${fmt_money(wt.repNeeded)}  (${fmt_money(wt.repRemaining)} remaining)`);
+    }
+    if (factions.companyTarget) {
+      ns.tprint(`  Company target: ${factions.companyTarget.company} -> ${factions.companyTarget.faction} @ ${factions.companyTarget.city}`);
+    }
+    if (factions.trainingTarget) {
+      const tt = factions.trainingTarget;
+      ns.tprint(`  Training target: ${tt.course} @ ${tt.university} (${tt.currentHackingLevel}/${tt.targetHackingLevel} hacking)`);
+    }
+    if (factions.activity) {
+      const activity_detail = [factions.activity.target, factions.activity.detail].filter(Boolean).join(" | ");
+      ns.tprint(`  Activity: ${factions.activity.type || "idle"}${activity_detail ? `  |  ${activity_detail}` : ""}`);
     }
     if (factions.topAffordable && factions.topAffordable.length > 0) {
       ns.tprint("  Top affordable augs:");

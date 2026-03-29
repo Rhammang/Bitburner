@@ -98,7 +98,7 @@ export const CORE_MODULES = [
   { file: MODULE_FILES.BUY_SERVERS, desc: "Server Purchase Manager", interval: 20000, bootCritical: false },
   { file: MODULE_FILES.CONTRACTS, desc: "Contract Solver", interval: 60000, bootCritical: false },
   { file: MODULE_FILES.STOCKS, desc: "Stock Trader", interval: 30000, bootCritical: false },
-  { file: MODULE_FILES.FACTIONS, desc: "Faction & Aug Manager", interval: 30000, bootCritical: false },
+  { file: MODULE_FILES.FACTIONS, desc: "Faction & Progression Manager", interval: 30000, bootCritical: false },
 ];
 
 export const LITE_BOOT_MODULES = [
@@ -136,6 +136,40 @@ export const BUY_SERVERS_LOOP_MS = 30000;
 export const BUY_SERVERS_SERVER_PREFIX = "pserv-";
 export const BUY_SERVERS_MIN_RAM = 8;
 export const BUY_SERVERS_BUDGET_FRACTION = 0.25;
+export const SINGULARITY_PROGRAM_PURCHASE_ORDER = [
+  "BruteSSH.exe",
+  "FTPCrack.exe",
+  "relaySMTP.exe",
+  "HTTPWorm.exe",
+  "SQLInject.exe",
+  "ServerProfiler.exe",
+  "DeepscanV1.exe",
+  "AutoLink.exe",
+  "DeepscanV2.exe",
+  "Formulas.exe",
+];
+export const SINGULARITY_BACKDOOR_TARGETS = [
+  { server: "CSEC", faction: "CyberSec" },
+  { server: "avmnite-02h", faction: "NiteSec" },
+  { server: "I.I.I.I", faction: "The Black Hand" },
+  { server: "run4theh111z", faction: "BitRunners" },
+];
+export const SINGULARITY_COMPANY_TARGETS = [
+  { company: "MegaCorp", faction: "MegaCorp", city: "Sector-12" },
+  { company: "Blade Industries", faction: "Blade Industries", city: "Sector-12" },
+  { company: "Four Sigma", faction: "Four Sigma", city: "Sector-12" },
+  { company: "ECorp", faction: "ECorp", city: "Aevum" },
+  { company: "Bachman & Associates", faction: "Bachman & Associates", city: "Aevum" },
+  { company: "Clarke Incorporated", faction: "Clarke Incorporated", city: "Aevum" },
+  { company: "NWO", faction: "NWO", city: "Volhaven" },
+  { company: "OmniTek Incorporated", faction: "OmniTek Incorporated", city: "Volhaven" },
+  { company: "KuaiGong International", faction: "KuaiGong International", city: "Chongqing" },
+  { company: "Fulcrum Technologies", faction: "Fulcrum Secret Technologies", city: "Aevum" },
+];
+export const SINGULARITY_TRAINING_CITY = "Sector-12";
+export const SINGULARITY_TRAINING_UNIVERSITY = "Rothman University";
+export const SINGULARITY_TRAINING_COURSE = "Algorithms";
+export const SINGULARITY_TRAINING_HACKING_LEVEL = 50;
 
 export const MANAGER_HOME_RESERVE_DEFAULT = 16;
 export const MANAGER_SPACING_MS_DEFAULT = 200;
@@ -171,6 +205,21 @@ const CONFIG_DEFAULTS = {
     loopMs: DAEMON_LOOP_MS,
     warnThrottleMs: DAEMON_WARN_THROTTLE_MS,
   },
+  factions: {
+    autoBuy: true,
+    cashReserve: 50_000_000,
+    workFocus: "hacking",
+    skipFactions: [],
+    autoPrograms: true,
+    programReserve: 1_000_000,
+    autoBackdoor: true,
+    autoTraining: true,
+    trainingHackingLevel: SINGULARITY_TRAINING_HACKING_LEVEL,
+    trainingCity: SINGULARITY_TRAINING_CITY,
+    trainingUniversity: SINGULARITY_TRAINING_UNIVERSITY,
+    trainingCourse: SINGULARITY_TRAINING_COURSE,
+    autoCompany: true,
+  },
 };
 
 /**
@@ -188,6 +237,7 @@ export function load_config(ns) {
       manager: { ...CONFIG_DEFAULTS.manager, ...user.manager },
       buyServers: { ...CONFIG_DEFAULTS.buyServers, ...user.buyServers },
       daemon: { ...CONFIG_DEFAULTS.daemon, ...user.daemon },
+      factions: { ...CONFIG_DEFAULTS.factions, ...user.factions },
     };
   } catch {
     return structuredClone(CONFIG_DEFAULTS);

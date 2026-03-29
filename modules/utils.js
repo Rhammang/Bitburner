@@ -19,6 +19,37 @@ export function list_servers(ns) {
 }
 
 /**
+ * Returns the shortest connection path between two servers, inclusive.
+ * Empty array means no route was found.
+ * @param {NS} ns
+ * @param {string} start
+ * @param {string} target
+ * @returns {string[]}
+ */
+export function find_server_path(ns, start, target) {
+  const from = String(start || "home");
+  const to = String(target || "");
+  if (!to) return [];
+  if (from === to) return [from];
+
+  const seen = new Set([from]);
+  const queue = [[from]];
+  while (queue.length > 0) {
+    const path = queue.shift();
+    const host = path[path.length - 1];
+    for (const next of ns.scan(host)) {
+      if (seen.has(next)) continue;
+      const next_path = path.concat(next);
+      if (next === to) return next_path;
+      seen.add(next);
+      queue.push(next_path);
+    }
+  }
+
+  return [];
+}
+
+/**
  * Returns rooted hosts that can run scripts.
  * Kept for compatibility with modules that import get_hosts.
  * @param {NS} ns

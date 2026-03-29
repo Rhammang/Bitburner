@@ -348,7 +348,12 @@ function effectiveness_text(file, state, manager, metrics, refresh_ms, boot_read
     if (fs.affordableCount > 0) parts.push(`${fs.affordableCount} buy`);
     if (fs.needRepCount > 0) parts.push(`${fs.needRepCount} need`);
     if (fs.pendingInstall > 0) parts.push(`${fs.pendingInstall} pend`);
-    if (fs.workTarget) parts.push(`work:${short_host(fs.workTarget.faction)}`);
+    if (fs.activity?.type === "company" && fs.activity.target) parts.push(`corp:${short_host(fs.activity.target)}`);
+    else if (fs.activity?.type === "training") parts.push("train");
+    else if (fs.workTarget) parts.push(`work:${short_host(fs.workTarget.faction)}`);
+    if (fs.backdoor?.nextEligible?.server) parts.push(`bd:${short_host(fs.backdoor.nextEligible.server)}`);
+    else if (fs.backdoor?.remaining > 0) parts.push(`bd:${fs.backdoor.remaining}`);
+    if (Array.isArray(fs.missingPrograms) && fs.missingPrograms.length > 0) parts.push(`prog:${fs.missingPrograms.length}`);
     return parts.length > 0 ? parts.join(" ") : `${fs.factionCount || 0} fac`;
   }
 

@@ -14,7 +14,8 @@ progression automation without manual babysitting.
     - `/modules/runtime-contracts.js` is the shared contract layer: all file
       paths, module metadata, worker definitions, RAM costs, tuning constants,
       and utility functions for script classification.
-    - `/modules/utils.js` provides shared utilities (`list_servers`, `get_hosts`).
+    - `/modules/utils.js` provides shared utilities (`list_servers`, `get_hosts`,
+      `find_server_path`).
     - Scheduler runs modules from home on interval with RAM checks and disable flags.
     - State and diagnostics are written under `/data/`:
       - `servers.txt`, `rooted.txt`, `targets.txt`, `prepped.txt` (root.js writes)
@@ -23,7 +24,8 @@ progression automation without manual babysitting.
       - `server_map.json` (manager writes; scored target list with PREP/HACK state)
       - `contracts_status.txt` (contracts.js writes; discovered coding contracts)
       - `stocks_status.txt` (stocks.js writes; trading state and portfolio)
-      - `factions_status.json` (factions.js writes; aug survey, work target, purchases)
+      - `factions_status.json` (factions.js writes; aug survey, progression
+        activity, backdoor/program status, purchases)
       - `disabled_<module>.js` flags (cleared on daemon restart)
 
 ## Manager Modes
@@ -72,24 +74,45 @@ progression automation without manual babysitting.
     - Unsupported contract types are logged but skipped (no penalty).
     - Status written to `contracts_status.txt` (line count = discovered contracts).
 
-## Factions & Augmentation Model
+## Factions & Singularity Progression Model
 
     - `factions.js` requires Singularity API (Source-File 4). If unavailable,
-      the module exits silently on first cycle.
+      the module exits on its first cycle.
+    - Auto-buys TOR and darkweb programs in a fixed priority order when cash
+      exceeds `programReserve`.
+    - Auto-backdoors the faction servers (`CSEC`, `avmnite-02h`, `I.I.I.I`,
+      `run4theh111z`) once they are rooted and hackable.
     - Auto-accepts pending faction invitations (respects `skipFactions` config).
     - Surveys augmentations across all joined factions, deduplicating by picking
       the faction where the player has the most rep.
     - Works for the faction offering the most valuable unaffordable augmentation.
+    - Falls back to university hacking training, then megacorp/company work,
+      when no faction reputation target exists.
     - Buys augmentations in descending price order (most expensive first) to
       minimize the compounding 1.9× price multiplier.
     - Does NOT auto-install — the player decides when to reset.
     - Config keys (`data/config.json` → `factions` section):
       - `autoBuy` (bool, default true) — auto-purchase affordable augs
-      - `cashReserve` (number, default $50M) — minimum cash to keep
+      - `cashReserve` (number, default $50M) — minimum cash to keep before
+        buying augmentations
       - `workFocus` ("hacking"|"field"|"security", default "hacking")
       - `skipFactions` (string[], default []) — factions to ignore
-    - Status written to `factions_status.json` (JSON with aug counts, work
-      target, pending installs, top affordable/need-rep lists).
+      - `autoPrograms` (bool, default true) — buy TOR/darkweb programs
+      - `programReserve` (number, default $1M) — minimum cash to keep before
+        buying TOR/programs
+      - `autoBackdoor` (bool, default true) — install eligible faction-server
+        backdoors automatically
+      - `autoTraining` (bool, default true) — train hacking when no faction
+        rep target exists
+      - `trainingHackingLevel` (number, default 50) — stop training once this
+        hacking level is reached
+      - `trainingCity` / `trainingUniversity` / `trainingCourse` — training
+        fallback details (defaults: Sector-12 / Rothman University / Algorithms)
+      - `autoCompany` (bool, default true) — work megacorp/company jobs when
+        no faction rep target exists
+    - Status written to `factions_status.json` (JSON with aug counts, current
+      activity, backdoor/program progress, work target, pending installs, and
+      top affordable/need-rep lists).
 
 ## Known Best Tactics (Codebase-Specific)
 
