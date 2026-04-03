@@ -10,6 +10,7 @@ export const TARGETS_FILE = `${DATA_DIR}targets.txt`;
 export const PREPPED_FILE = `${DATA_DIR}prepped.txt`;
 export const CONTRACTS_STATUS_FILE = `${DATA_DIR}contracts_status.txt`;
 export const STOCKS_STATUS_FILE = `${DATA_DIR}stocks_status.txt`;
+export const STOCKS_HISTORY_FILE = `${DATA_DIR}stocks_history.json`;
 export const FACTIONS_STATUS_FILE = `${DATA_DIR}factions_status.json`;
 export const DISABLED_PREFIX = `${DATA_DIR}disabled_`;
 
@@ -282,6 +283,18 @@ export function script_target_counts_equal(left, right) {
   }
   return true;
 }
+
+// ── Stock trading constants ─────────────────────────────────────────
+
+export const STOCKS_LOOP_MS = 6000;
+export const STOCKS_BUY_THRESHOLD = 0.55;
+export const STOCKS_SELL_THRESHOLD = 0.51;
+export const STOCKS_COMMISSION = 100000;
+export const STOCKS_MAX_PORTFOLIO_FRACTION = 0.75;
+export const STOCKS_PER_STOCK_FRACTION = 0.2;
+export const STOCKS_MIN_CASH_RESERVE = 5000000;
+export const STOCKS_HISTORY_CAPACITY = 180;
+export const STOCKS_EVENT_CAPACITY = 50;
 
 // ── Metrics infrastructure ──────────────────────────────────────────
 

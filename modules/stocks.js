@@ -1,15 +1,62 @@
 import {
   STOCKS_STATUS_FILE,
+  STOCKS_HISTORY_FILE,
+  STOCKS_HISTORY_CAPACITY,
+  STOCKS_EVENT_CAPACITY,
+  STOCKS_LOOP_MS,
+  STOCKS_BUY_THRESHOLD,
+  STOCKS_SELL_THRESHOLD,
+  STOCKS_COMMISSION,
+  STOCKS_MAX_PORTFOLIO_FRACTION,
+  STOCKS_PER_STOCK_FRACTION,
+  STOCKS_MIN_CASH_RESERVE,
   load_config,
 } from "/modules/runtime-contracts.js";
 
-const COMMISSION = 100000; // $100k per transaction
-const BUY_THRESHOLD = 0.55; // buy when (forecast - volatility) > this — hysteresis band upper
-const SELL_THRESHOLD = 0.51; // sell when (forecast - volatility) < this — hysteresis band lower
-const MAX_PORTFOLIO_FRACTION = 0.75; // never invest more than 75% of total money
-const PER_STOCK_FRACTION = 0.2; // max 20% of portfolio per stock
-const MIN_CASH_RESERVE = 5000000; // keep at least $5M liquid
-const LOOP_MS = 6000; // 6s loop (stock ticks are ~6s)
+// ── History state (in-memory, serialized to JSON each tick) ─────────
+
+/** @type {Object<string, {samples: Array, events: Array}>} */
+const history = {};
+
+function push_sample(sym, sample) {
+  if (!history[sym]) history[sym] = { samples: [], events: [] };
+  const ring = history[sym].samples;
+  if (ring.length >= STOCKS_HISTORY_CAPACITY) ring.shift();
+  ring.push(sample);
+}
+
+function push_event(sym, event) {
+  if (!history[sym]) history[sym] = { samples: [], events: [] };
+  const ring = history[sym].events;
+  if (ring.length >= STOCKS_EVENT_CAPACITY) ring.shift();
+  ring.push(event);
+}
+
+// ── Market snapshot ─────────────────────────────────────────────────
+
+function build_market_snapshot(ns, symbols) {
+  const snapshot = {};
+  for (const sym of symbols) {
+    const [long_shares, long_price] = ns.stock.getPosition(sym);
+    const bid = ns.stock.getBidPrice(sym);
+    const ask = ns.stock.getAskPrice(sym);
+    const price = ns.stock.getPrice(sym);
+    const forecast = ns.stock.getForecast(sym);
+    const volatility = ns.stock.getVolatility(sym);
+    const adjusted = forecast - volatility;
+    const max_shares = ns.stock.getMaxShares(sym);
+
+    snapshot[sym] = {
+      bid, ask, price, forecast, volatility, adjusted, max_shares,
+      long_shares, long_price,
+      value: long_shares > 0 ? long_shares * bid : 0,
+      cost: long_shares > 0 ? long_shares * long_price : 0,
+    };
+  }
+  return snapshot;
+}
+
+// ── Main ────────────────────────────────────────────────────────────
 
 /** @param {NS} ns */
 export async function main(ns) {
@@ -37,35 +84,39 @@ export async function main(ns) {
     const symbols = ns.stock.getSymbols();
     const player_money = ns.getPlayer().money;
 
-    // Build portfolio snapshot
+    // Build single snapshot — all API calls happen here
+    const snapshot = build_market_snapshot(ns, symbols);
+
+    // Build portfolio from snapshot
     const portfolio = [];
     let portfolio_value = 0;
     for (const sym of symbols) {
-      const [long_shares, long_price, short_shares, short_price] = ns.stock.getPosition(sym);
-      if (long_shares > 0) {
-        const current_price = ns.stock.getBidPrice(sym);
-        const value = long_shares * current_price;
-        const cost = long_shares * long_price;
-        portfolio.push({ sym, shares: long_shares, avgPrice: long_price, value, profit: value - cost });
-        portfolio_value += value;
+      const s = snapshot[sym];
+      if (s.long_shares > 0) {
+        portfolio.push({
+          sym,
+          shares: s.long_shares,
+          avgPrice: s.long_price,
+          value: s.value,
+          profit: s.value - s.cost,
+        });
+        portfolio_value += s.value;
       }
     }
 
     const total_worth = player_money + portfolio_value;
-    const max_invested = total_worth * MAX_PORTFOLIO_FRACTION;
-    const per_stock_cap = total_worth * PER_STOCK_FRACTION;
+    const max_invested = total_worth * STOCKS_MAX_PORTFOLIO_FRACTION;
+    const per_stock_cap = total_worth * STOCKS_PER_STOCK_FRACTION;
 
     // Sell positions where volatility-adjusted forecast has turned unfavorable
     for (const pos of portfolio) {
-      const forecast = ns.stock.getForecast(pos.sym);
-      const volatility = ns.stock.getVolatility(pos.sym);
-      const adjusted = forecast - volatility;
-      if (adjusted < SELL_THRESHOLD) {
+      const s = snapshot[pos.sym];
+      if (s.adjusted < STOCKS_SELL_THRESHOLD) {
         const revenue = ns.stock.sellStock(pos.sym, pos.shares);
         if (revenue > 0) {
-          // revenue from sellStock() is net of commission already
           const profit = revenue - (pos.shares * pos.avgPrice);
           total_profit += profit;
+          push_event(pos.sym, [Date.now(), "sell", pos.shares, revenue / pos.shares, profit]);
           ns.tprint(
             `STOCKS: Sold ${pos.sym} ${ns.formatNumber(pos.shares)} shares ` +
             `${profit >= 0 ? "+" : ""}$${ns.formatNumber(profit)}`
@@ -77,12 +128,10 @@ export async function main(ns) {
     // Buy stocks with strong volatility-adjusted forecasts
     const buy_candidates = [];
     for (const sym of symbols) {
-      const forecast = ns.stock.getForecast(sym);
-      const volatility = ns.stock.getVolatility(sym);
-      const adjusted = forecast - volatility;
-      if (adjusted > BUY_THRESHOLD) {
-        const expected_return = (forecast - 0.5) * volatility;
-        buy_candidates.push({ sym, forecast, volatility, expected_return });
+      const s = snapshot[sym];
+      if (s.adjusted > STOCKS_BUY_THRESHOLD) {
+        const expected_return = (s.forecast - 0.5) * s.volatility;
+        buy_candidates.push({ sym, forecast: s.forecast, volatility: s.volatility, expected_return });
       }
     }
 
@@ -90,34 +139,32 @@ export async function main(ns) {
     buy_candidates.sort((a, b) => b.expected_return - a.expected_return);
 
     for (const candidate of buy_candidates) {
-      const [long_shares] = ns.stock.getPosition(candidate.sym);
-      const ask_price = ns.stock.getAskPrice(candidate.sym);
-      const max_shares = ns.stock.getMaxShares(candidate.sym);
-      const current_position_value = long_shares * ask_price;
+      const s = snapshot[candidate.sym];
+      const current_position_value = s.long_shares * s.ask;
 
       // Skip if already at per-stock cap
       if (current_position_value >= per_stock_cap) continue;
 
       // How much can we spend?
       const cash = ns.getPlayer().money;
-      // Reserve money for server purchases and keep minimum liquid
-      const cash_reserve = Math.max(MIN_CASH_RESERVE, total_worth * reserve_fraction);
+      const cash_reserve = Math.max(STOCKS_MIN_CASH_RESERVE, total_worth * reserve_fraction);
       const available = Math.min(
-        cash - cash_reserve - COMMISSION,
+        cash - cash_reserve - STOCKS_COMMISSION,
         max_invested - portfolio_value,
         per_stock_cap - current_position_value
       );
-      if (available < ask_price + COMMISSION) continue;
+      if (available < s.ask + STOCKS_COMMISSION) continue;
 
       const shares_to_buy = Math.min(
-        max_shares - long_shares,
-        Math.floor(available / ask_price)
+        s.max_shares - s.long_shares,
+        Math.floor(available / s.ask)
       );
       if (shares_to_buy <= 0) continue;
 
       const cost = ns.stock.buyStock(candidate.sym, shares_to_buy);
       if (cost > 0) {
         portfolio_value += cost;
+        push_event(candidate.sym, [Date.now(), "buy", shares_to_buy, cost / shares_to_buy, null]);
         ns.tprint(
           `STOCKS: Bought ${candidate.sym} ${ns.formatNumber(shares_to_buy)} shares ` +
           `$${ns.formatNumber(cost)} (forecast ${(candidate.forecast * 100).toFixed(1)}%)`
@@ -125,7 +172,15 @@ export async function main(ns) {
       }
     }
 
-    // Refresh portfolio for status
+    // Record price samples for all symbols
+    const now = Date.now();
+    for (const sym of symbols) {
+      const s = snapshot[sym];
+      push_sample(sym, [now, s.price, s.forecast, s.volatility, s.adjusted]);
+    }
+
+    // Refresh portfolio for final status (positions may have changed from trades)
+    const final_positions_map = {};
     let final_positions = 0;
     let final_value = 0;
     let unrealized = 0;
@@ -133,9 +188,16 @@ export async function main(ns) {
       const [long_shares, long_price] = ns.stock.getPosition(sym);
       if (long_shares > 0) {
         final_positions++;
-        const value = long_shares * ns.stock.getBidPrice(sym);
+        const bid = ns.stock.getBidPrice(sym);
+        const value = long_shares * bid;
         final_value += value;
         unrealized += value - (long_shares * long_price);
+        final_positions_map[sym] = {
+          shares: long_shares,
+          avgPrice: long_price,
+          value,
+          unrealized: value - (long_shares * long_price),
+        };
       }
     }
 
@@ -147,11 +209,45 @@ export async function main(ns) {
       profit: total_profit + unrealized,
     });
 
-    await ns.sleep(LOOP_MS);
+    write_history(ns, symbols, final_positions_map);
+
+    await ns.sleep(STOCKS_LOOP_MS);
   }
 }
+
+// ── Status writers ──────────────────────────────────────────────────
 
 function write_status(ns, state, data) {
   const line = `${state}|${JSON.stringify(data)}`;
   ns.write(STOCKS_STATUS_FILE, line, "w");
+}
+
+function write_history(ns, symbols, positions) {
+  const sym_data = {};
+  for (const sym of symbols) {
+    const h = history[sym] || { samples: [], events: [] };
+    const last_sample = h.samples.length > 0 ? h.samples[h.samples.length - 1] : null;
+    sym_data[sym] = {
+      samples: h.samples,
+      events: h.events,
+      position: positions[sym] || null,
+      last: last_sample ? {
+        price: last_sample[1],
+        forecast: last_sample[2],
+        volatility: last_sample[3],
+        adjusted: last_sample[4],
+      } : null,
+    };
+  }
+
+  const payload = {
+    version: 1,
+    updatedAt: Date.now(),
+    sampleMs: STOCKS_LOOP_MS,
+    capacity: STOCKS_HISTORY_CAPACITY,
+    thresholds: { buy: STOCKS_BUY_THRESHOLD, sell: STOCKS_SELL_THRESHOLD },
+    symbols: sym_data,
+  };
+
+  ns.write(STOCKS_HISTORY_FILE, JSON.stringify(payload), "w");
 }
