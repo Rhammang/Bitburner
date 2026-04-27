@@ -11,10 +11,11 @@ const argsSchema = [
   ["owner", "Rhammang"],
   ["repo", "Bitburner"],
   ["branch", "main"],
-  ["mode", "sync"], // sync | run
+  ["mode", ""], // DEPRECATED: pre-existing flag; use --no-run instead
+  ["no-run", false],
   ["entry", "daemon.js"],
-  ["files", []], // explicit repo-relative file list to download
-  ["prefix", ""], // local destination prefix (default root)
+  ["files", []],
+  ["prefix", ""],
   ["extensions", [".js", ".ns", ".txt", ".script"]],
   ["recursive", true],
   ["kill-existing", true],
@@ -25,7 +26,8 @@ const argsSchema = [
 export function autocomplete(data, args) {
   data.flags(argsSchema);
   const lastFlag = args.length > 1 ? args[args.length - 2] : null;
-  if (lastFlag === "--mode") return ["sync", "run"];
+  if (lastFlag === "--mode") return ["sync", "run"]; // deprecated
+  if (lastFlag === "--no-run") return ["true", "false"];
   if (lastFlag === "--entry" || lastFlag === "--files") return data.scripts;
   return [];
 }
@@ -35,9 +37,12 @@ export async function main(ns) {
   const flags = ns.flags(argsSchema);
   const options = parse_options(flags);
 
-  if (!["sync", "run"].includes(options.mode)) {
-    ns.tprint(`ERROR: invalid --mode "${options.mode}". Use "sync" or "run".`);
+  if (options.legacyMode && !["sync", "run", ""].includes(options.legacyMode)) {
+    ns.tprint(`ERROR: invalid --mode "${options.legacyMode}". Use --no-run for sync-only.`);
     return;
+  }
+  if (options.legacyMode) {
+    ns.tprint(`NOTICE: --mode is deprecated; use --no-run for sync-only behavior.`);
   }
 
   const files = await resolve_file_list(ns, options);
@@ -53,7 +58,10 @@ export async function main(ns) {
     `GITHUB ${options.mode.toUpperCase()}: ${stats.updated} updated, ${stats.unchanged} unchanged, ${stats.failed} failed (${files.length} total) | latest commit: ${commit_info}`
   );
 
-  if (options.mode !== "run") return;
+  if (!options.shouldRun) {
+    ns.tprint(`GITHUB sync-only complete (--no-run set${options.legacyMode === "sync" ? " via legacy --mode sync" : ""}).`);
+    return;
+  }
 
   const entry_file = join_path(options.prefix, options.entry);
   if (!ns.fileExists(entry_file, "home")) {
@@ -77,11 +85,15 @@ export async function main(ns) {
 function parse_options(flags) {
   const explicit_run_args = Array.isArray(flags["run-args"]) ? flags["run-args"] : [];
   const passthrough_args = Array.isArray(flags._) ? flags._ : [];
+  const legacy_mode = String(flags.mode || "").trim().toLowerCase();
+  const no_run_flag = Boolean(flags["no-run"]);
+  const should_run = no_run_flag ? false : legacy_mode === "sync" ? false : true;
   return {
     owner: String(flags.owner).trim(),
     repo: String(flags.repo).trim(),
     branch: String(flags.branch).trim(),
-    mode: String(flags.mode).trim().toLowerCase(),
+    shouldRun: should_run,
+    legacyMode: legacy_mode,
     entry: normalize_repo_path(String(flags.entry || "")),
     files: Array.isArray(flags.files) ? flags.files.map(normalize_repo_path).filter(Boolean) : [],
     prefix: trim_slashes(String(flags.prefix || "")),
