@@ -41,6 +41,7 @@ export async function main(ns) {
   }
 
   const files = await resolve_file_list(ns, options);
+  ns.tprint(`GITHUB sync source: ${options.fileSource} (${files.length} files)`);
   if (files.length === 0) {
     ns.tprint("WARNING: no files selected for download.");
     return;
@@ -94,15 +95,24 @@ function parse_options(flags) {
 
 async function resolve_file_list(ns, options) {
   if (options.files.length > 0) {
+    options.fileSource = "explicit";
     return dedupe(options.files);
   }
 
+  const manifest = await fetch_manifest(ns, options);
+  if (Array.isArray(manifest) && manifest.length > 0) {
+    options.fileSource = "manifest";
+    return dedupe(manifest.filter((path) => should_include_file(path, options.extensions)));
+  }
+
   try {
+    options.fileSource = "auto-discovery";
     const listed = options.recursive
       ? await repository_tree_listing(ns, options)
       : await repository_listing(ns, options, "");
     return dedupe(listed);
   } catch (error) {
+    options.fileSource = "local-fallback";
     ns.tprint(`WARNING: GitHub listing failed (${String(error)}). Falling back to local ls.`);
     return dedupe(
       ns
