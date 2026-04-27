@@ -1,11 +1,14 @@
 // github-sync-run.js
-// Pull scripts from GitHub and optionally run an entry script.
+// Pull scripts from GitHub then (by default) run an entry script.
+//
+// Default file list comes from sync-manifest.txt; auto-discovery is the fallback.
 //
 // Examples:
-//   run github-sync-run.js --mode sync
-//   run github-sync-run.js --mode run --entry daemon.js
-//   run github-sync-run.js --mode sync --files daemon.js modules/manager.js
-//   run github-sync-run.js --mode run --entry daemon.js -- --verbose
+//   run github-sync-run.js                                  // sync + run daemon.js
+//   run github-sync-run.js --no-run                         // sync only
+//   run github-sync-run.js --entry modules/manager.js       // sync + run a different entry
+//   run github-sync-run.js --files daemon.js modules/manager.js --no-run
+//   run github-sync-run.js -- --verbose                     // sync + run daemon.js --verbose
 
 const argsSchema = [
   ["owner", "Rhammang"],
