@@ -55,7 +55,7 @@ export async function main(ns) {
   const stats = await sync_files(ns, options, files);
   const commit_info = await fetch_latest_commit_info(ns, options);
   ns.tprint(
-    `GITHUB ${options.mode.toUpperCase()}: ${stats.updated} updated, ${stats.unchanged} unchanged, ${stats.failed} failed (${files.length} total) | latest commit: ${commit_info}`
+    `GITHUB SYNC: ${stats.updated} updated, ${stats.unchanged} unchanged, ${stats.failed} failed (${files.length} total) | latest commit: ${commit_info}`
   );
 
   if (!options.shouldRun) {
