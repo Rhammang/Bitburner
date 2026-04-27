@@ -13,6 +13,10 @@ export const STOCKS_STATUS_FILE = `${DATA_DIR}stocks_status.txt`;
 export const STOCKS_HISTORY_FILE = `${DATA_DIR}stocks_history.json`;
 export const FACTIONS_STATUS_FILE = `${DATA_DIR}factions_status.json`;
 export const DISABLED_PREFIX = `${DATA_DIR}disabled_`;
+export const SYNC_MANIFEST_FILE = "sync-manifest.txt";
+export const POST_INSTALL_BOOT_FILE = `${DATA_DIR}post_install_boot.txt`;
+export const GITHUB_SYNC_RUN_SCRIPT = "github-sync-run.js";
+export const SLEEVES_STATUS_FILE = `${DATA_DIR}sleeves_status.json`;
 
 export const MODULE_FILES = {
   ROOT: "root.js",

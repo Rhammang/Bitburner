@@ -1,0 +1,25 @@
+# Bitburner deploy manifest
+# One repo-relative path per line. # for comments.
+# This file is the authoritative list for github-sync-run.js.
+# When a new module is added, append it here.
+
+# Top-level entry points
+daemon.js
+diag.js
+github-sync-run.js
+git-pull.js
+stock-graph.js
+
+# Modules
+modules/buy-servers.js
+modules/contracts.js
+modules/deploy-lite.js
+modules/factions.js
+modules/hud.js
+modules/manager.js
+modules/root-lite.js
+modules/root.js
+modules/runtime-contracts.js
+modules/sleeves.js
+modules/stocks.js
+modules/utils.js
