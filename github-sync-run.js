@@ -242,6 +242,25 @@ async function fetch_file_raw(ns, options, repo_file, local_file) {
   return ns.read(local_file);
 }
 
+function parse_manifest(content) {
+  if (!content) return [];
+  return content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"))
+    .map(normalize_repo_path)
+    .filter(Boolean);
+}
+
+async function fetch_manifest(ns, options) {
+  try {
+    const text = await fetch_file_content(ns, options, "sync-manifest.txt");
+    return parse_manifest(text);
+  } catch {
+    return null;
+  }
+}
+
 function should_include_file(path, extensions) {
   return extensions.some((ext) => path.endsWith(ext));
 }
