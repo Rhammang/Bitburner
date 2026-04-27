@@ -73,7 +73,7 @@ export async function main(ns) {
   }
 
   if (options.killExisting) {
-    ns.scriptKill(entry_file, "home");
+    kill_running_automation(ns, entry_file);
   }
 
   const pid = ns.exec(entry_file, "home", 1, ...options.runArgs);
@@ -83,6 +83,18 @@ export async function main(ns) {
   }
 
   ns.tprint(`RUNNING: ${entry_file} (pid ${pid})`);
+}
+
+function kill_running_automation(ns, entry_file) {
+  ns.scriptKill(entry_file, "home");
+  // Daemon-managed module scripts also live on home. Kill them too so the
+  // restarted daemon brings everything up clean.
+  const home_scripts = ns.ps("home");
+  for (const proc of home_scripts) {
+    if (proc.filename === entry_file) continue;
+    if (proc.filename === ns.getScriptName()) continue; // don't kill self
+    ns.scriptKill(proc.filename, "home");
+  }
 }
 
 function parse_options(flags) {
