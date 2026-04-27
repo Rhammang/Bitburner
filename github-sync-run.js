@@ -102,7 +102,7 @@ async function resolve_file_list(ns, options) {
   const manifest = await fetch_manifest(ns, options);
   if (Array.isArray(manifest) && manifest.length > 0) {
     options.fileSource = "manifest";
-    return dedupe(manifest.filter((path) => should_include_file(path, options.extensions)));
+    return dedupe(manifest);
   }
 
   try {
