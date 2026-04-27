@@ -35,12 +35,35 @@ a watchlist with sparklines in a tail window.
 
 ## github-sync-run.js
 
-Pulls files from a GitHub repository into the game and optionally launches an
-entry script after sync.
+Pulls scripts from GitHub then (by default) launches an entry script.
 
-**Modes**:
-- `--mode sync` — pull files only
-- `--mode run` — pull files then launch entry script
+**Default**: sync + run `daemon.js`. The script kills running home automation
+first via `kill_running_automation()` so the new daemon brings everything up
+clean.
+
+**Flags**:
+
+- `--no-run` — sync only, no entry script launch.
+- `--entry <path>` — override entry script (default `daemon.js`).
+- `--files a b c` — explicit file list (overrides manifest and discovery).
+- `--no-kill-existing` — skip the home automation kill step.
+- `-- <args>` — passthrough arguments to the entry script.
+- `--mode sync|run` — DEPRECATED, use `--no-run` for sync-only.
+
+**File-list resolution order**:
+
+1. Explicit `--files` argument.
+2. `sync-manifest.txt` fetched from GitHub (authoritative deploy list, no
+   extension filter applied).
+3. Recursive GitHub tree API listing (auto-discovery, extension-filtered).
+4. Local `ns.ls("home")` if all of the above fail.
+
+The script logs which path was used (`manifest`, `auto-discovery`,
+`explicit`, or `local-fallback`).
+
+**Adding a new module**: append the repo-relative path to
+`sync-manifest.txt`. Auto-discovery is a safety net only — relying on it
+means the module ships unannounced.
 
 ## git-pull.js
 
