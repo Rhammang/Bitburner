@@ -513,7 +513,7 @@ function kill_all_scripts_except_self(ns) {
   const my_pid = me?.pid;
   for (const proc of ns.ps("home")) {
     if (proc.pid === my_pid) continue;
-    ns.scriptKill(proc.filename, "home");
+    ns.kill(proc.pid);
   }
 }
 
@@ -561,6 +561,11 @@ function buy_neuroflux_levels(ns, faction, cashReserve) {
 }
 
 async function trigger_auto_install(ns, installState) {
+  if (!ns.fileExists(GITHUB_SYNC_RUN_SCRIPT, "home")) {
+    ns.tprint(`FACTIONS: AUTO-INSTALL aborted — ${GITHUB_SYNC_RUN_SCRIPT} missing on home. Boot flag NOT written, scripts NOT killed.`);
+    return false;
+  }
+
   const payload = JSON.stringify({
     timestamp: new Date().toISOString(),
     reason: "auto-install",
@@ -580,7 +585,18 @@ async function trigger_auto_install(ns, installState) {
   );
   kill_all_scripts_except_self(ns);
   await ns.sleep(250); // let kills register before install
-  ns.singularity.installAugmentations(GITHUB_SYNC_RUN_SCRIPT);
+
+  // installAugmentations triggers a hard reset, so success means this script
+  // never returns from the call. If we DO get a return, the install failed —
+  // clean up and report so the daemon (which we just killed) doesn't stay down
+  // with an armed boot flag.
+  const installResult = ns.singularity.installAugmentations(GITHUB_SYNC_RUN_SCRIPT);
+  if (installResult === false) {
+    ns.tprint(`FACTIONS: AUTO-INSTALL FAILED — installAugmentations returned false. Removing boot flag.`);
+    ns.rm(POST_INSTALL_BOOT_FILE, "home");
+    return false;
+  }
+  return true;
 }
 
 function start_faction_work(ns, faction, preferred_type, current_work) {
