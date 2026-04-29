@@ -26,6 +26,7 @@ export const MODULE_FILES = {
   CONTRACTS: "contracts.js",
   STOCKS: "stocks.js",
   FACTIONS: "factions.js",
+  SLEEVES: "sleeves.js",
   ROOT_LITE: "root-lite.js",
   DEPLOY_LITE: "deploy-lite.js",
 };
@@ -37,6 +38,7 @@ export const BUY_SERVERS_MODULE_FILE = `${MODULES_DIR}${MODULE_FILES.BUY_SERVERS
 export const CONTRACTS_MODULE_FILE = `${MODULES_DIR}${MODULE_FILES.CONTRACTS}`;
 export const STOCKS_MODULE_FILE = `${MODULES_DIR}${MODULE_FILES.STOCKS}`;
 export const FACTIONS_MODULE_FILE = `${MODULES_DIR}${MODULE_FILES.FACTIONS}`;
+export const SLEEVES_MODULE_FILE = `${MODULES_DIR}${MODULE_FILES.SLEEVES}`;
 export const ROOT_LITE_MODULE_FILE = `${MODULES_DIR}${MODULE_FILES.ROOT_LITE}`;
 export const DEPLOY_LITE_MODULE_FILE = `${MODULES_DIR}${MODULE_FILES.DEPLOY_LITE}`;
 
@@ -104,6 +106,7 @@ export const CORE_MODULES = [
   { file: MODULE_FILES.CONTRACTS, desc: "Contract Solver", interval: 60000, bootCritical: false },
   { file: MODULE_FILES.STOCKS, desc: "Stock Trader", interval: 30000, bootCritical: false },
   { file: MODULE_FILES.FACTIONS, desc: "Faction & Progression Manager", interval: 30000, bootCritical: false },
+  { file: MODULE_FILES.SLEEVES, desc: "Sleeve Manager", interval: 30000, bootCritical: false },
 ];
 
 export const LITE_BOOT_MODULES = [
@@ -119,6 +122,7 @@ export const MODULE_ROWS = [
   { file: MODULE_FILES.CONTRACTS, label: "Contracts" },
   { file: MODULE_FILES.STOCKS, label: "Stocks" },
   { file: MODULE_FILES.FACTIONS, label: "Factions" },
+  { file: MODULE_FILES.SLEEVES, label: "Sleeves" },
 ];
 
 export const LITE_ROWS = [
@@ -136,6 +140,8 @@ export const DEPLOY_LITE_LOOP_MS = 5000;
 export const DEPLOY_LITE_HOME_RESERVE = 16;
 export const DEPLOY_LITE_WORKER_RAM = WORKER_RAM_COSTS.PREP_GROW;
 export const DEPLOY_LITE_WORKER_SYNC_INTERVAL_MS = 120000;
+
+export const SLEEVES_LOOP_MS = 30000;
 
 export const BUY_SERVERS_LOOP_MS = 30000;
 export const BUY_SERVERS_SERVER_PREFIX = "pserv-";
@@ -229,6 +235,15 @@ const CONFIG_DEFAULTS = {
     installMinAugs: 3,
     installCooldownMs: 300_000,
   },
+  sleeves: {
+    enabled: true,
+    cashReserve: 50_000_000,
+    shockThreshold: 50,
+    trainingHackingLevel: 100,
+    prioritize: ["train-hacking", "crime", "faction", "idle"],
+    bladeburnerSleeve: false,
+    bladeburnerSleeveIndex: 0,
+  },
 };
 
 /**
@@ -247,6 +262,7 @@ export function load_config(ns) {
       buyServers: { ...CONFIG_DEFAULTS.buyServers, ...user.buyServers },
       daemon: { ...CONFIG_DEFAULTS.daemon, ...user.daemon },
       factions: { ...CONFIG_DEFAULTS.factions, ...user.factions },
+      sleeves: { ...CONFIG_DEFAULTS.sleeves, ...user.sleeves },
     };
   } catch {
     return structuredClone(CONFIG_DEFAULTS);
