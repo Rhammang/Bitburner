@@ -354,6 +354,18 @@ function effectiveness_text(file, state, manager, metrics, refresh_ms, boot_read
     if (fs.backdoor?.nextEligible?.server) parts.push(`bd:${short_host(fs.backdoor.nextEligible.server)}`);
     else if (fs.backdoor?.remaining > 0) parts.push(`bd:${fs.backdoor.remaining}`);
     if (Array.isArray(fs.missingPrograms) && fs.missingPrograms.length > 0) parts.push(`prog:${fs.missingPrograms.length}`);
+    const inst = fs.install;
+    if (inst) {
+      const ratio = inst.spendRatio === null || inst.spendRatio === undefined
+        ? "-"
+        : !Number.isFinite(inst.spendRatio)
+        ? "inf"
+        : `${Math.round(inst.spendRatio)}x`;
+      const tag = inst.armed
+        ? (inst.gateSatisfied ? "ARM!" : "arm")
+        : (inst.gateSatisfied ? "DRY!" : "-");
+      parts.push(`inst:${tag} ${ratio}`);
+    }
     return parts.length > 0 ? parts.join(" ") : `${fs.factionCount || 0} fac`;
   }
 
