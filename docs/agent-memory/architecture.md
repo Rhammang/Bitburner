@@ -45,6 +45,8 @@ All runtime state and diagnostics are written under `/data/`:
 | `server_map.json` | `manager.js` | Scored target list with PREP/HACK state |
 | `contracts_status.txt` | `contracts.js` | Discovered coding contracts (line count) |
 | `stocks_status.txt` | `stocks.js` | Trading state and portfolio as `state\|{json}` |
-| `factions_status.json` | `factions.js` | Aug counts, activity, backdoor/program progress |
+| `factions_status.json` | `factions.js` | Aug counts, activity, backdoor/program progress, install gate state |
+| `sleeves_status.json` | `sleeves.js` | Per-sleeve assignments, shock, sync, augs purchased |
+| `post_install_boot.txt` | `factions.js` (write), `daemon.js` (read+delete) | Written immediately before `installAugmentations`; consumed once on next daemon boot |
 | `disabled_<module>.js` | Module (self) | Disable flag; cleared on daemon restart |
 | `config.json` | User | Runtime config overrides (see per-module docs) |

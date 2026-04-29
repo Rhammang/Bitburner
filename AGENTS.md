@@ -65,8 +65,14 @@ or can be read directly from `docs/agent-memory/`.
     HUD trend analysis and `diag.js` reports.
 11. `MetricsRing` is in-memory only (no persistence). Do not add file-backed
     persistence unless the user explicitly requests it.
-12. The factions module must never auto-install augmentations. The player
-    decides when to reset.
+12. Auto-install is permitted but must remain gated behind
+    `config.factions.autoInstall` (default `false`). The install path must
+    always go through `trigger_auto_install()`, which verifies the callback
+    script exists, writes `/data/post_install_boot.txt`, kills home scripts
+    by PID, and calls `ns.singularity.installAugmentations("github-sync-run.js")`
+    so a fresh GitHub pull precedes daemon boot. The install gate is the
+    diminishing-returns rule defined in `evaluate_install_gate()`. Do not
+    add a separate install path that bypasses these safeties.
 13. Contract solvers must be correct — wrong answers cost attempts. Test
     solver logic carefully before adding new contract types.
 
@@ -100,7 +106,10 @@ Load these when the task touches the relevant domain.
 <!-- Contract auto-solver: supported types, attempt safety, status -->
 
 @import ./docs/agent-memory/factions.md
-<!-- Factions/Singularity: programs, backdoors, aug purchase, config keys -->
+<!-- Factions/Singularity: programs, backdoors, aug purchase, install gate, config keys -->
+
+@import ./docs/agent-memory/sleeves.md
+<!-- Sleeves module: shock recovery, task priorities, Bladeburner gating -->
 
 @import ./docs/agent-memory/metrics.md
 <!-- Derived metrics, MetricsRing, control-theory concepts, thresholds -->
