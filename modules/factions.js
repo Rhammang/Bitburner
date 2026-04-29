@@ -560,6 +560,29 @@ function buy_neuroflux_levels(ns, faction, cashReserve) {
   return { faction, purchased, spent };
 }
 
+async function trigger_auto_install(ns, installState) {
+  const payload = JSON.stringify({
+    timestamp: new Date().toISOString(),
+    reason: "auto-install",
+    spendRatio: installState.spendRatio,
+    pendingCount: installState.pendingInstallCount,
+    cheapestBought: installState.cheapestBoughtThisCycle,
+    nextAug: installState.nextAugName,
+    neuroflux: installState.neuroflux,
+  }, null, 2);
+  await ns.write(POST_INSTALL_BOOT_FILE, payload, "w");
+  ns.tprint(
+    `FACTIONS: AUTO-INSTALL firing — pending=${installState.pendingInstallCount} ratio=${
+      installState.spendRatio === Infinity || !Number.isFinite(installState.spendRatio)
+        ? "inf"
+        : (installState.spendRatio || 0).toFixed(1)
+    }`
+  );
+  kill_all_scripts_except_self(ns);
+  await ns.sleep(250); // let kills register before install
+  ns.singularity.installAugmentations(GITHUB_SYNC_RUN_SCRIPT);
+}
+
 function start_faction_work(ns, faction, preferred_type, current_work) {
   if (current_work && current_work.type === "FACTION" && current_work.factionName === faction) {
     return {
