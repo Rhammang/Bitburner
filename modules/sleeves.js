@@ -162,6 +162,119 @@ async function write_status(ns, status) {
 }
 
 function pick_sleeve_task(ns, sleeveIndex, cfg, context) {
-  // Phase 4.3 fills in real assignment logic.
-  return { type: "idle", detail: "stub" };
+  let info = null;
+  try {
+    info = ns.sleeve.getSleeve(sleeveIndex);
+  } catch {
+    return { type: "idle", detail: "no-info" };
+  }
+
+  if (info?.shock != null && info.shock > Number(cfg.shockThreshold ?? 50)) {
+    if (assign_shock_recovery(ns, sleeveIndex)) {
+      return { type: "shock", detail: `shock=${info.shock.toFixed(1)}` };
+    }
+  }
+
+  if (
+    cfg.bladeburnerSleeve === true &&
+    sleeveIndex === Number(cfg.bladeburnerSleeveIndex || 0) &&
+    context.bladeburnerAvailable
+  ) {
+    const bb = assign_bladeburner(ns, sleeveIndex, context);
+    if (bb) return { type: "bladeburner", detail: bb };
+  }
+
+  const priorities = Array.isArray(cfg.prioritize) && cfg.prioritize.length > 0
+    ? cfg.prioritize
+    : ["train-hacking", "crime", "faction", "idle"];
+
+  for (const priority of priorities) {
+    if (priority === "train-hacking") {
+      const targetLevel = Number(cfg.trainingHackingLevel || 100);
+      const hacking = info?.skills?.hacking ?? 0;
+      if (hacking < targetLevel) {
+        if (assign_hacking_training(ns, sleeveIndex)) {
+          return { type: "training", detail: `hacking ${hacking}/${targetLevel}` };
+        }
+      }
+    } else if (priority === "crime") {
+      const crime = pick_crime_task(ns, sleeveIndex, context);
+      if (crime && assign_crime(ns, sleeveIndex, crime)) {
+        return { type: "crime", detail: crime };
+      }
+    } else if (priority === "faction") {
+      const result = assign_faction_mirror(ns, sleeveIndex, context);
+      if (result) return { type: "faction", detail: result };
+    } else if (priority === "idle") {
+      try {
+        ns.sleeve.setToIdle(sleeveIndex);
+      } catch {
+        // ignore
+      }
+      return { type: "idle", detail: "configured" };
+    }
+  }
+  return { type: "idle", detail: "fallthrough" };
+}
+
+function assign_shock_recovery(ns, sleeveIndex) {
+  try {
+    return ns.sleeve.setToShockRecovery(sleeveIndex) === true;
+  } catch {
+    return false;
+  }
+}
+
+function assign_hacking_training(ns, sleeveIndex) {
+  try {
+    if (!ns.sleeve.travel(sleeveIndex, "Sector-12")) return false;
+    return ns.sleeve.setToUniversityCourse(sleeveIndex, "Rothman University", "Algorithms") === true;
+  } catch {
+    return false;
+  }
+}
+
+function pick_crime_task(ns, sleeveIndex, context) {
+  if (context.karma > -54000) {
+    return "Homicide";
+  }
+  // After Daedalus karma met, fall back to the historically best money/sec crime.
+  return "Heist";
+}
+
+function assign_crime(ns, sleeveIndex, crime) {
+  try {
+    return ns.sleeve.setToCommitCrime(sleeveIndex, crime) === true;
+  } catch {
+    return false;
+  }
+}
+
+function assign_faction_mirror(ns, sleeveIndex, context) {
+  const work = context.factionsStatus?.workTarget;
+  if (!work || !work.faction) return null;
+  const types = ["hacking", "field", "security"];
+  for (const type of types) {
+    try {
+      if (ns.sleeve.setToFactionWork(sleeveIndex, work.faction, type) === true) {
+        return `${work.faction}:${type}`;
+      }
+    } catch {
+      // try next type
+    }
+  }
+  return null;
+}
+
+function assign_bladeburner(ns, sleeveIndex, context) {
+  // Phase 5 fills this in with a proper action selector. For now keep the
+  // sleeve safely on Field Analysis if API + division are present.
+  try {
+    if (ns.sleeve.setToBladeburnerAction(sleeveIndex, "Field analysis")) {
+      return "field-analysis";
+    }
+  } catch {
+    // ignore
+  }
+  return null;
 }
