@@ -443,18 +443,23 @@ function evaluate_install_gate(ns, player, remainingAugs, pendingInstallNames, c
   const cheapest = compute_cheapest_bought_this_cycle(ns, pendingInstallNames);
   const next = compute_next_aug_target(remainingAugs);
 
-  let bitNodeStartTime = 0;
+  let lastResetTime = 0;
   try {
     const reset = ns.getResetInfo();
-    bitNodeStartTime = Number(reset?.lastNodeReset || reset?.lastAugReset || 0);
+    const augReset = Number(reset?.lastAugReset || 0);
+    const nodeReset = Number(reset?.lastNodeReset || 0);
+    lastResetTime = Math.max(augReset, nodeReset);
   } catch {
-    bitNodeStartTime = 0;
+    lastResetTime = 0;
   }
-  const sinceReset = bitNodeStartTime > 0 ? Date.now() - bitNodeStartTime : Infinity;
+  const sinceReset = lastResetTime > 0 ? Date.now() - lastResetTime : Infinity;
   const cooldownActive = sinceReset < cooldownMs;
   const cooldownRemainingMs = cooldownActive ? Math.max(0, cooldownMs - sinceReset) : 0;
 
-  const pendingCount = Array.isArray(pendingInstallNames) ? pendingInstallNames.length : 0;
+  const pendingNonNfg = Array.isArray(pendingInstallNames)
+    ? pendingInstallNames.filter((name) => name !== "NeuroFlux Governor")
+    : [];
+  const pendingCount = pendingNonNfg.length;
   const minAugsSatisfied = pendingCount >= minAugs;
 
   let spendRatio = null;
