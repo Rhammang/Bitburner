@@ -18,6 +18,7 @@ import {
   ROOTED_FILE,
   SERVER_MAP_FILE,
   SERVERS_FILE,
+  SLEEVES_STATUS_FILE,
   STOCKS_STATUS_FILE,
   TARGETS_FILE,
   get_worker_kind,
@@ -260,6 +261,7 @@ function read_metrics(ns) {
     contracts: count_lines(ns, CONTRACTS_FILE),
     stocks: read_stocks_status(ns),
     factions: read_json(ns, FACTIONS_STATUS_FILE, null),
+    sleeves: read_json(ns, SLEEVES_STATUS_FILE, null),
     purchased: ns.getPurchasedServers().length,
     purchasedLimit: ns.getPurchasedServerLimit(),
   };
@@ -367,6 +369,21 @@ function effectiveness_text(file, state, manager, metrics, refresh_ms, boot_read
       parts.push(`inst:${tag} ${ratio}`);
     }
     return parts.length > 0 ? parts.join(" ") : `${fs.factionCount || 0} fac`;
+  }
+
+  if (file === "sleeves.js") {
+    const sl = metrics.sleeves;
+    if (!sl) return "idle";
+    if (!sl.enabled) return sl.reason || "off";
+    const s = sl.summary || {};
+    const parts = [];
+    if (s.shock) parts.push(`shock${s.shock}`);
+    if (s.training) parts.push(`train${s.training}`);
+    if (s.crime) parts.push(`crime${s.crime}`);
+    if (s.faction) parts.push(`fac${s.faction}`);
+    if (s.bladeburner) parts.push(`bb${s.bladeburner}`);
+    if (s.idle) parts.push(`idle${s.idle}`);
+    return parts.length ? parts.join(" ") : "no-sleeves";
   }
 
   if (file === "hud.js") {
