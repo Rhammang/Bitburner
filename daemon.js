@@ -17,6 +17,7 @@ import {
   MODULE_FILES,
   MODULES_DIR,
   MODULE_STATUS_FILE,
+  POST_INSTALL_BOOT_FILE,
   ROOT_MODULE_FILE,
   WORKER_SOURCES,
   load_config,
@@ -26,6 +27,8 @@ import {
 export async function main(ns) {
   ns.disableLog("ALL");
   ns.tprint("DAEMON v5.1: Starting up...");
+
+  const post_install = consume_post_install_boot_flag(ns);
 
   const cfg = load_config(ns).daemon;
   const LOOP_MS = cfg.loopMs;
@@ -39,7 +42,13 @@ export async function main(ns) {
   const last_lite_run = {};
   const last_warn = {};
   const status = {};
-  const boot = { rootReady: false, managerReady: false };
+  const boot = {
+    rootReady: false,
+    managerReady: false,
+    postInstallResume: post_install != null,
+    postInstallTimestamp: post_install?.timestamp || null,
+  };
+  let post_install_marker_emitted = !boot.postInstallResume;
 
   for (const mod of CORE_MODULES) {
     last_run[mod.file] = 0;
@@ -154,8 +163,39 @@ export async function main(ns) {
       "w"
     );
 
+    // The postInstallResume marker is one-shot: clear after the first status
+    // write so subsequent cycles don't keep advertising it.
+    if (boot.postInstallResume && !post_install_marker_emitted) {
+      post_install_marker_emitted = true;
+    } else if (boot.postInstallResume) {
+      boot.postInstallResume = false;
+      boot.postInstallTimestamp = null;
+    }
+
     await ns.sleep(LOOP_MS);
   }
+}
+
+/**
+ * Reads and removes the post-install boot flag written by factions.js
+ * before installAugmentations(). Returns the parsed payload, or null if
+ * not present / malformed.
+ * @param {NS} ns
+ */
+function consume_post_install_boot_flag(ns) {
+  if (!ns.fileExists(POST_INSTALL_BOOT_FILE, "home")) {
+    return null;
+  }
+  const raw = ns.read(POST_INSTALL_BOOT_FILE);
+  ns.rm(POST_INSTALL_BOOT_FILE, "home");
+  let parsed = null;
+  try {
+    parsed = raw ? JSON.parse(raw) : null;
+  } catch {
+    parsed = null;
+  }
+  ns.tprint("DAEMON: post-install resume detected");
+  return parsed;
 }
 
 /**
