@@ -152,7 +152,26 @@ async function run_cycle(ns) {
     pending_install,
     cfg
   );
-  maybe_log_install_dry_run(ns, installState);
+
+  if (installState.gateSatisfied && installState.armed) {
+    const nf_faction = pick_neuroflux_faction(ns, player, skip_factions);
+    installState.neuroflux = buy_neuroflux_levels(ns, nf_faction, cash_reserve);
+    installState.lastAction = "installing";
+    // trigger_auto_install resets the run on success; only returns if install
+    // failed or was aborted (callback missing). Either way, fall through and
+    // let this cycle's status get written so the player can see what happened.
+    await trigger_auto_install(ns, installState);
+    if (ns.fileExists(POST_INSTALL_BOOT_FILE, "home")) {
+      // Boot flag still present — we got here only because install actually
+      // succeeded? Defensive: this branch should be unreachable. Leave the
+      // flag alone for daemon to consume on next boot.
+      installState.lastAction = "installed";
+    } else {
+      installState.lastAction = "install-aborted";
+    }
+  } else {
+    maybe_log_install_dry_run(ns, installState);
+  }
 
   return {
     joined: Array.from(joined),
