@@ -48,7 +48,6 @@ export async function main(ns) {
     postInstallResume: post_install != null,
     postInstallTimestamp: post_install?.timestamp || null,
   };
-  let post_install_marker_emitted = !boot.postInstallResume;
 
   for (const mod of CORE_MODULES) {
     last_run[mod.file] = 0;
@@ -163,11 +162,9 @@ export async function main(ns) {
       "w"
     );
 
-    // The postInstallResume marker is one-shot: clear after the first status
-    // write so subsequent cycles don't keep advertising it.
-    if (boot.postInstallResume && !post_install_marker_emitted) {
-      post_install_marker_emitted = true;
-    } else if (boot.postInstallResume) {
+    // The postInstallResume marker is one-shot: clear immediately after the
+    // first status write so subsequent cycles don't keep advertising it.
+    if (boot.postInstallResume) {
       boot.postInstallResume = false;
       boot.postInstallTimestamp = null;
     }
