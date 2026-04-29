@@ -18,6 +18,8 @@
 import { find_server_path } from "/modules/utils.js";
 import {
   FACTIONS_STATUS_FILE,
+  GITHUB_SYNC_RUN_SCRIPT,
+  POST_INSTALL_BOOT_FILE,
   SINGULARITY_BACKDOOR_TARGETS,
   SINGULARITY_COMPANY_TARGETS,
   SINGULARITY_PROGRAM_PURCHASE_ORDER,
@@ -140,6 +142,18 @@ async function run_cycle(ns) {
   const pending_install = all_owned.filter((aug) => !installed.has(aug));
   const final_work = ns.singularity.getCurrentWork();
 
+  // Recompute remaining augs after purchases this cycle so the install gate
+  // sees the post-buy state.
+  const post_buy_survey = survey_augmentations(ns, player, skip_factions);
+  const installState = evaluate_install_gate(
+    ns,
+    player,
+    [...post_buy_survey.affordable, ...post_buy_survey.needRep],
+    pending_install,
+    cfg
+  );
+  maybe_log_install_dry_run(ns, installState);
+
   return {
     joined: Array.from(joined),
     factionCount: player.factions.length,
@@ -150,6 +164,7 @@ async function run_cycle(ns) {
     purchased,
     pendingInstall: pending_install.length,
     pendingInstallNames: pending_install.slice(0, 10),
+    install: installState,
     topAffordable: affordable.slice(0, 5).map((aug) => ({
       name: aug.name,
       faction: aug.faction,
@@ -386,6 +401,106 @@ function survey_augmentations(ns, player, skip_factions) {
       .filter((aug) => !aug.affordable)
       .sort((left, right) => right.price - left.price),
   };
+}
+
+function compute_cheapest_bought_this_cycle(ns, pendingInstallNames) {
+  if (!Array.isArray(pendingInstallNames) || pendingInstallNames.length === 0) {
+    return null;
+  }
+  let cheapest = null;
+  for (const name of pendingInstallNames) {
+    if (name === "NeuroFlux Governor") continue;
+    let price = Infinity;
+    try {
+      price = ns.singularity.getAugmentationPrice(name);
+    } catch {
+      continue;
+    }
+    if (!Number.isFinite(price)) continue;
+    if (!cheapest || price < cheapest.price) {
+      cheapest = { name, price };
+    }
+  }
+  return cheapest;
+}
+
+function compute_next_aug_target(remainingAugs) {
+  if (!Array.isArray(remainingAugs)) return null;
+  const repQualified = remainingAugs
+    .filter((aug) => aug && aug.name !== "NeuroFlux Governor" && aug.affordable)
+    .sort((left, right) => left.price - right.price);
+  if (repQualified.length === 0) return null;
+  const next = repQualified[0];
+  return { name: next.name, faction: next.faction, price: next.price };
+}
+
+function evaluate_install_gate(ns, player, remainingAugs, pendingInstallNames, cfg) {
+  const armed = cfg.autoInstall === true;
+  const ratio = Math.max(1, Number(cfg.installPriceRatio) || 100);
+  const minAugs = Math.max(1, Number(cfg.installMinAugs) || 3);
+  const cooldownMs = Math.max(0, Number(cfg.installCooldownMs) || 300_000);
+
+  const cheapest = compute_cheapest_bought_this_cycle(ns, pendingInstallNames);
+  const next = compute_next_aug_target(remainingAugs);
+
+  let bitNodeStartTime = 0;
+  try {
+    const reset = ns.getResetInfo();
+    bitNodeStartTime = Number(reset?.lastNodeReset || reset?.lastAugReset || 0);
+  } catch {
+    bitNodeStartTime = 0;
+  }
+  const sinceReset = bitNodeStartTime > 0 ? Date.now() - bitNodeStartTime : Infinity;
+  const cooldownActive = sinceReset < cooldownMs;
+  const cooldownRemainingMs = cooldownActive ? Math.max(0, cooldownMs - sinceReset) : 0;
+
+  const pendingCount = Array.isArray(pendingInstallNames) ? pendingInstallNames.length : 0;
+  const minAugsSatisfied = pendingCount >= minAugs;
+
+  let spendRatio = null;
+  let priceGateSatisfied = false;
+  if (next && cheapest && cheapest.price > 0) {
+    spendRatio = next.price / cheapest.price;
+    priceGateSatisfied = spendRatio >= ratio;
+  } else if (!next && pendingCount > 0) {
+    // No rep-qualified augs left to buy this cycle but we have purchases.
+    spendRatio = Infinity;
+    priceGateSatisfied = true;
+  }
+
+  const gateSatisfied =
+    !cooldownActive && minAugsSatisfied && priceGateSatisfied;
+
+  return {
+    armed,
+    gateSatisfied,
+    wouldInstall: gateSatisfied,
+    cooldownActive,
+    cooldownRemainingMs,
+    pendingInstallCount: pendingCount,
+    installMinAugs: minAugs,
+    installPriceRatio: ratio,
+    cheapestBoughtThisCycle: cheapest,
+    nextAugName: next ? next.name : null,
+    nextAugPrice: next ? next.price : null,
+    spendRatio,
+    lastAction: "idle",
+    neuroflux: { faction: null, purchased: 0, spent: 0 },
+  };
+}
+
+function maybe_log_install_dry_run(ns, installState) {
+  if (!installState.gateSatisfied) return;
+  if (installState.armed) return;
+  ns.print(
+    `FACTIONS install-gate WOULD FIRE (dry-run): ratio=${
+      installState.spendRatio === Infinity
+        ? "inf"
+        : (installState.spendRatio || 0).toFixed(1)
+    } pending=${installState.pendingInstallCount} cheapestBought=${
+      installState.cheapestBoughtThisCycle?.name || "n/a"
+    } next=${installState.nextAugName || "none-rep-qualified"}`
+  );
 }
 
 function start_faction_work(ns, faction, preferred_type, current_work) {
