@@ -444,6 +444,30 @@ export async function main(ns) {
         ns.tprint(`    ${pad(a.name, 35)} ${pad(a.faction, 20)} rep:${fmt_money(a.repCurrent)}/${fmt_money(a.repNeeded)}`);
       }
     }
+    if (factions.install) {
+      const inst = factions.install;
+      const ratio_str = inst.spendRatio === null || inst.spendRatio === undefined
+        ? "-"
+        : !Number.isFinite(inst.spendRatio)
+        ? "inf"
+        : inst.spendRatio.toFixed(1);
+      const cooldown_str = inst.cooldownActive
+        ? `cooldown ${Math.ceil(inst.cooldownRemainingMs / 1000)}s`
+        : "cooldown clear";
+      ns.tprint(`  Install gate: armed=${inst.armed ? "YES" : "no"}  satisfied=${inst.gateSatisfied ? "YES" : "no"}  ${cooldown_str}`);
+      ns.tprint(`    pending: ${inst.pendingInstallCount}/${inst.installMinAugs}  ratio: ${ratio_str}/${inst.installPriceRatio}x`);
+      if (inst.cheapestBoughtThisCycle) {
+        ns.tprint(`    cheapest bought: ${inst.cheapestBoughtThisCycle.name} ($${fmt_money(inst.cheapestBoughtThisCycle.price)})`);
+      }
+      if (inst.nextAugName) {
+        ns.tprint(`    next aug: ${inst.nextAugName} ($${fmt_money(inst.nextAugPrice || 0)})`);
+      } else if (inst.pendingInstallCount > 0) {
+        ns.tprint(`    next aug: (none rep-qualified — gate auto-satisfied if other conditions met)`);
+      }
+      if (inst.lastAction && inst.lastAction !== "idle") {
+        ns.tprint(`    last action: ${inst.lastAction}`);
+      }
+    }
   }
 
   ns.tprint(`${sep}`);
