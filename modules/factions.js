@@ -517,6 +517,49 @@ function kill_all_scripts_except_self(ns) {
   }
 }
 
+function pick_neuroflux_faction(ns, player, skipFactions) {
+  let best = null;
+  for (const faction of player.factions) {
+    if (skipFactions.has(faction)) continue;
+    let augs = [];
+    try {
+      augs = ns.singularity.getAugmentationsFromFaction(faction);
+    } catch {
+      continue;
+    }
+    if (!augs.includes("NeuroFlux Governor")) continue;
+    const rep = ns.singularity.getFactionRep(faction);
+    if (!best || rep > best.rep) {
+      best = { faction, rep };
+    }
+  }
+  return best ? best.faction : null;
+}
+
+function buy_neuroflux_levels(ns, faction, cashReserve) {
+  if (!faction) return { faction: null, purchased: 0, spent: 0 };
+  let purchased = 0;
+  let spent = 0;
+  while (true) {
+    let price = Infinity;
+    let repReq = Infinity;
+    try {
+      price = ns.singularity.getAugmentationPrice("NeuroFlux Governor");
+      repReq = ns.singularity.getAugmentationRepReq("NeuroFlux Governor");
+    } catch {
+      break;
+    }
+    const rep = ns.singularity.getFactionRep(faction);
+    if (!Number.isFinite(price) || !Number.isFinite(repReq)) break;
+    if (rep < repReq) break;
+    if (ns.getPlayer().money - price < cashReserve) break;
+    if (!ns.singularity.purchaseAugmentation(faction, "NeuroFlux Governor")) break;
+    purchased += 1;
+    spent += price;
+  }
+  return { faction, purchased, spent };
+}
+
 function start_faction_work(ns, faction, preferred_type, current_work) {
   if (current_work && current_work.type === "FACTION" && current_work.factionName === faction) {
     return {
