@@ -31,5 +31,21 @@
 ### 3. Late Game
 
 - Manager in HACK mode: maximize batch throughput across all hosts.
-- Automate factions/augs/install cadence.
+- Automate factions/augs/install cadence:
+  - `factions.js` evaluates the install gate every cycle (diminishing-
+    returns rule: next aug ≥ `installPriceRatio` × cheapest bought,
+    pending non-NFG ≥ `installMinAugs`, post-cooldown).
+  - Default is dry-run (`autoInstall: false`); the HUD shows
+    `inst:DRY!` when the gate is satisfied. Tune thresholds while
+    watching the dry-run, then flip `autoInstall: true` to arm.
+  - Armed install: NFG buyout → boot flag → kill home scripts →
+    `installAugmentations("github-sync-run.js")`. Post-install boot
+    pulls latest from GitHub before launching daemon.
+- Sleeves (Source-File 10) run via `sleeves.js`:
+  - Buy sleeve augs above `sleeves.cashReserve`.
+  - Shock recovery preempts other tasks above the threshold.
+  - Default task priority grinds Homicide for Daedalus karma until
+    `karma <= -54000`, then mirrors the main player's faction work.
+  - Bladeburner sleeve specialization is a follow-up commit (gated
+    behind `sleeves.bladeburnerSleeve`, default off).
 - Keep contracts/backdoors/stocks as supporting income/progression layers.
