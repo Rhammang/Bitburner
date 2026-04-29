@@ -86,6 +86,13 @@ function empty_summary() {
   return { shock: 0, training: 0, crime: 0, faction: 0, idle: 0, bladeburner: 0 };
 }
 
+function is_factions_status_fresh(factionsStatus, maxAgeMs = 5 * 60 * 1000) {
+  if (!factionsStatus || !factionsStatus.timestamp) return false;
+  const ts = Date.parse(factionsStatus.timestamp);
+  if (!Number.isFinite(ts)) return false;
+  return Date.now() - ts <= maxAgeMs;
+}
+
 function collect_context(ns) {
   let karma = 0;
   try {
@@ -251,9 +258,16 @@ function assign_crime(ns, sleeveIndex, crime) {
 }
 
 function assign_faction_mirror(ns, sleeveIndex, context) {
+  if (!is_factions_status_fresh(context.factionsStatus)) return null;
   const work = context.factionsStatus?.workTarget;
   if (!work || !work.faction) return null;
-  const types = ["hacking", "field", "security"];
+
+  // Prefer the exact work type the main player is doing, fall back to the
+  // legacy ordered list if workType wasn't recorded.
+  const preferred = work.workType ? [String(work.workType)] : [];
+  const fallback = ["hacking", "field", "security"];
+  const types = [...preferred, ...fallback.filter((t) => !preferred.includes(t))];
+
   for (const type of types) {
     try {
       if (ns.sleeve.setToFactionWork(sleeveIndex, work.faction, type) === true) {

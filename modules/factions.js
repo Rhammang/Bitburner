@@ -107,8 +107,12 @@ async function run_cycle(ns) {
       repNeeded: target.repReq,
       repCurrent: target.currentRep,
       repRemaining: target.repReq - target.currentRep,
+      workType: null,
     };
     activity = start_faction_work(ns, target.faction, work_focus, current_work);
+    if (activity?.type === "faction" && activity.detail) {
+      work_target.workType = String(activity.detail);
+    }
   } else if (auto_training && player.skills.hacking < training_hacking_level) {
     training_target = {
       city: training_city,
