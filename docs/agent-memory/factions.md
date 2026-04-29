@@ -21,7 +21,10 @@ module exits on its first cycle (self-disables).
   megacorp/company work, when no faction reputation target exists.
 - **Aug purchase**: Buys augmentations in descending price order (most
   expensive first) to minimize the compounding 1.9× price multiplier.
-- **NEVER auto-installs**: The player decides when to reset and install augs.
+- **Install-gate telemetry**: Computes the diminishing-returns install gate
+  each cycle and writes state to `factions_status.json` (`install` block).
+  Auto-install is gated behind `autoInstall` (default `false`); when
+  unarmed the gate is dry-run only. See "Install gate" below.
 
 ## Config Keys (`data/config.json` → `factions` section)
 
@@ -40,6 +43,36 @@ module exits on its first cycle (self-disables).
 | `trainingUniversity` | string | Rothman University | University for training fallback |
 | `trainingCourse` | string | Algorithms | Course for training fallback |
 | `autoCompany` | bool | true | Work megacorp/company jobs when no faction rep target |
+| `autoInstall` | bool | false | Master arming switch for auto-install (override of historical guardrail #12) |
+| `installPriceRatio` | number | 100 | Spend-ratio threshold (×) — gate fires when next aug ≥ ratio × cheapest bought |
+| `installMinAugs` | number | 3 | Minimum non-NFG pending augs before the gate can fire |
+| `installCooldownMs` | number | 300000 | Cooldown after the most recent reset (aug or BitNode) |
+
+## Install gate
+
+Each cycle, after the aug-purchase pass, the module evaluates an install gate
+that decides whether the run should reset. The gate fires when **all three**
+hold:
+
+1. **Spend ratio:** `nextAug.price >= installPriceRatio × cheapestBoughtThisCycle.price`,
+   where `nextAug` is the cheapest *rep-qualified* unbought aug. NeuroFlux
+   Governor is excluded from both legs. If no rep-qualified augs remain
+   unbought, this leg auto-satisfies (nothing left to buy this cycle).
+2. **Pending floor:** non-NFG pending installs ≥ `installMinAugs`.
+3. **Cooldown:** time since the most recent reset (max of `lastAugReset`
+   and `lastNodeReset`) ≥ `installCooldownMs`.
+
+When the gate fires:
+
+- `autoInstall = false` (default): write gate state to `factions_status.json`
+  for HUD/diag (dry-run telemetry). No reset happens. The HUD shows
+  `inst:DRY!` when the gate is satisfied but unarmed.
+- `autoInstall = true`: trigger the install path (NFG buyout → write
+  `data/post_install_boot.txt` → kill home scripts →
+  `ns.singularity.installAugmentations("github-sync-run.js")`). The post-install
+  callback re-pulls from GitHub before booting daemon.
+
+See AGENTS.md guardrail #12 for the full safety contract.
 
 ## Status
 
