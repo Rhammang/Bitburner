@@ -224,6 +224,10 @@ const CONFIG_DEFAULTS = {
     trainingUniversity: SINGULARITY_TRAINING_UNIVERSITY,
     trainingCourse: SINGULARITY_TRAINING_COURSE,
     autoCompany: true,
+    autoInstall: false,
+    installPriceRatio: 100,
+    installMinAugs: 3,
+    installCooldownMs: 300_000,
   },
 };
 
