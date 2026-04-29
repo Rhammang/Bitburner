@@ -12,6 +12,7 @@ import {
   BATCH_WORKER_FILES,
   CONTRACTS_STATUS_FILE,
   FACTIONS_STATUS_FILE,
+  SLEEVES_STATUS_FILE,
   MANAGER_STATUS_FILE,
   METRICS_THRESHOLDS,
   MODULE_STATUS_FILE,
@@ -470,6 +471,27 @@ export async function main(ns) {
     }
   }
 
+  // ── 14. Sleeves Status ───────────────────────────────────
+  ns.tprint(`${thin}`);
+  ns.tprint("▸ SLEEVES");
+  const sleeves = read_json(ns, SLEEVES_STATUS_FILE, null);
+  if (!sleeves) {
+    ns.tprint("  No sleeves status file (module may not be running or no SF10)");
+  } else if (!sleeves.enabled) {
+    ns.tprint(`  Disabled: ${sleeves.reason || "off"}`);
+  } else {
+    const s = sleeves.summary || {};
+    ns.tprint(`  Updated: ${sleeves.timestamp || "unknown"}  |  karma: ${(sleeves.karma || 0).toFixed(0)}`);
+    ns.tprint(`  Summary: shock=${s.shock || 0} train=${s.training || 0} crime=${s.crime || 0} fac=${s.faction || 0} bb=${s.bladeburner || 0} idle=${s.idle || 0}`);
+    for (const sl of sleeves.sleeves || []) {
+      const shock = sl.shock != null ? sl.shock.toFixed(1) : "-";
+      const sync = sl.sync != null ? sl.sync.toFixed(1) : "-";
+      const hack = sl.stats?.hacking ?? "-";
+      const detail = sl.task?.detail ? `:${sl.task.detail}` : "";
+      ns.tprint(`  [${sl.index}] task=${sl.task?.type || "-"}${detail}  shock=${shock}  sync=${sync}  hack=${hack}  augs+${sl.augsPurchased || 0}`);
+    }
+  }
+
   ns.tprint(`${sep}`);
   ns.tprint("  END DIAGNOSTICS");
   ns.tprint(`${sep}`);
@@ -486,6 +508,7 @@ function build_json_snapshot(ns, worker_conflicts = collect_worker_target_confli
     income: { moneyDelta: mgr?.derivedMetrics?.income || 0, scriptApi: ns.getScriptIncome()[0] },
     stocks: parse_stocks_status(ns),
     factions: read_json(ns, FACTIONS_STATUS_FILE, null),
+    sleeves: read_json(ns, SLEEVES_STATUS_FILE, null),
     workerConflicts: worker_conflicts,
     ram: {
       homeMax: ns.getServerMaxRam("home"),
