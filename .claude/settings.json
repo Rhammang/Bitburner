@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cd c:\\\\\\\\Users\\\\\\\\rhamm\\\\\\\\01_Projects\\\\\\\\Bitburner)",
+      "Bash(git commit *)"
+    ]
+  }
+}

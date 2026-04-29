@@ -508,6 +508,15 @@ function maybe_log_install_dry_run(ns, installState) {
   );
 }
 
+function kill_all_scripts_except_self(ns) {
+  const me = ns.getRunningScript();
+  const my_pid = me?.pid;
+  for (const proc of ns.ps("home")) {
+    if (proc.pid === my_pid) continue;
+    ns.scriptKill(proc.filename, "home");
+  }
+}
+
 function start_faction_work(ns, faction, preferred_type, current_work) {
   if (current_work && current_work.type === "FACTION" && current_work.factionName === faction) {
     return {

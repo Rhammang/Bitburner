@@ -1,0 +1,39 @@
+ As u/VoidNoire mentioned, the "trick" that I picked up in the months I played was that generally growth from extremely low cash and optimally weakening are your two main drains.
+
+Preface: I don't know how good my strategy is anymore, so take any of this with a grain of salt.
+
+The real clever bit is that execution times are determined when the respective commands are initiated, and their security impact and efficacy is exacted when they resolve. Sequencing is a complex optimization.
+
+Note here, I don't mean the execution time of your hack/weak/grow is determined when the script runs. I mean the execution time is determined when the command in your script actually begins/initiates. That means you want your hack and grow commands to start and finish with security at minimum, and you want your weakens to start with security at minimum as well.
+
+The gist is, you're trying to get your "Weaken" to fire when the server is already at its weakest, such that it has the shortest possible run-time AND will finish at around the exact time it needs to countermand an increase in security from a parallel command (hack or grow)
+
+The result looks something like this:
+
+    Weaken to minimum, before doing anything. Server is at.. well, let's call it "0", even though it's never 0.
+
+    Calculate the number of threads needed to grow server to max. Multiply that by the security delta that growth would produce. Fire a weaken thread that counters this exact amount of security.
+
+    Calculate a specific percentage of money you want to hack the server down to. I recommend not taking the server to 0, ever, it simplifies performance and calculation non-trivially. I like 92-96% (leaving 8-4% of the money in a server, of max). Figure out how much security delta that hack would produce. Fire a weaken thread that counters this exact amount of security.
+
+    Wait for the difference in execution times between your growth and your weaken, such that your growth finishes *just* before the weaken you just fired. Fire a growth script that sleeps for that amount of time before firing. Do the same thing for hacks. Not necessarily in this order, but trying to illustrate that it's all about timing.
+
+The end result looks like this:
+
+    You fire an early weaken before a grow the weaken was tuned to countermand.
+
+    You fire an early weaken before a hack this weaken is tuned to countermand.
+
+    The first weaken resolves after the growth, the second weaken resolves after the hack.
+
+Thus: grow-weak-hack-weak. The result is that commands should always fire (and hacks and grows should always resolve) with the server at minimum security. Again, even the weakens should fire at min security, but obviously they're not going to resolve at min.
+
+Edit (suboptimal notes):
+
+The tightness of timing depended heavily on the game's handling of the script queue, and it's been quite a while since I played.When I came up with the strategy, scripts were "queued" by the game, and the evaluations for those scripts weren't instantaneous, but instead fired roughly every 6 seconds. That means to promise scripts would resolve in the order I wanted to, I had to pad them by an amount strictly greater than 6 seconds, and I settled for 12. This, for all I know, has changed, and would enable for tighter timing. As a word of caution, tighter timing does a poorer job of absorbing non-deterministic changes to run-times, such as general game lag or your player character leveling up.
+
+I feel confident saying there is a much better way to accomplish avoidance of tail collision than what I did, and I'd be remiss not to point out that the timing is probably easier to achieve with game improvements since the time I wrote my strat.
+
+Edit 2 (nondeterminism notes):
+
+Another thing worth mentioning is that at the start of a fresh run, your exec times are insanely volatile, due to the player character leveling up, reducing run-times. I never did come up with a way to perfect this. Suffice it to say that the first few hours of a run are always plagued with inconsistency that eventually self-regulates as your leveling slows. There will always be a better way, at the expense of complexity. What my strategy set out to do, primarily, was execute in a deterministic vacuum, which is why non-deterministic elements (like leveling up) thwart it particularly badly towards the start of a run. Those elements can probably be made deterministic, but I chose not to go deeper. 
