@@ -57,8 +57,9 @@ export async function main(ns) {
 
   const stats = await sync_files(ns, options, files);
   const commit_info = await fetch_latest_commit_info(ns, options);
+  const skipped_str = stats.skipped ? `, ${stats.skipped} skipped` : "";
   ns.tprint(
-    `GITHUB SYNC: ${stats.updated} updated, ${stats.unchanged} unchanged, ${stats.failed} failed (${files.length} total) | latest commit: ${commit_info}`
+    `GITHUB SYNC: ${stats.updated} updated, ${stats.unchanged} unchanged, ${stats.failed} failed${skipped_str} (${files.length} total) | latest commit: ${commit_info}`
   );
 
   if (!options.shouldRun) {
@@ -221,9 +222,15 @@ async function sync_files(ns, options, files) {
   let updated = 0;
   let unchanged = 0;
   let failed = 0;
+  let skipped = 0;
 
   for (const repo_file of files) {
     const local_file = join_path(options.prefix, repo_file);
+    if (!is_valid_bitburner_path(local_file)) {
+      skipped += 1;
+      ns.tprint(`  SKIPPED ${repo_file} (invalid filename for Bitburner — spaces or special chars)`);
+      continue;
+    }
     const old_content = ns.fileExists(local_file, "home") ? ns.read(local_file) : null;
 
     // Use GitHub Contents API instead of raw.githubusercontent.com to avoid
@@ -257,7 +264,18 @@ async function sync_files(ns, options, files) {
     }
   }
 
-  return { updated, unchanged, failed };
+  return { updated, unchanged, failed, skipped };
+}
+
+/**
+ * Returns true if `path` is a syntactically valid Bitburner script/file path.
+ * Bitburner rejects spaces, parentheses, and several other characters at
+ * write time. We pre-filter to avoid throwing inside ns.write and aborting
+ * the whole sync. Valid characters: alphanumeric, _, -, ., /
+ */
+function is_valid_bitburner_path(path) {
+  if (!path) return false;
+  return /^[A-Za-z0-9_\-./]+$/.test(path);
 }
 
 /** Fetch file content via GitHub Contents API (no CDN caching). */
