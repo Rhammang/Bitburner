@@ -14,9 +14,22 @@ For each sleeve `i in 0..ns.sleeve.getNumSleeves()-1`:
 2. **Shock recovery** if `shock > sleeves.shockThreshold`. Preempts every
    later branch including Bladeburner.
 3. **Bladeburner specialization** when `bladeburnerSleeve = true`, the
-   sleeve index matches `bladeburnerSleeveIndex`, and the API is present.
-   Disabled by default; the Phase 5 commit ships the proper action
-   selector.
+   sleeve index matches `bladeburnerSleeveIndex`, the API is present,
+   and the player is in the division (`ns.bladeburner.inBladeburner()`).
+   Action priority:
+   - Try contracts in order of difficulty: Bounty Hunter, Retirement,
+     Tracking. Skip if no remaining count or estimated success chance
+     min < 70%. (Probes both `"Contract"` and `"Contracts"` type
+     spellings; Bitburner has used both across versions.)
+   - If any contract had wide chance variance (>15%), assign
+     **Field Analysis** to tighten future estimates.
+   - Else assign **Training** as a productive fallback.
+   - Operations are intentionally NOT attempted via this selector
+     until the sleeve API path for them is runtime-verified — they can
+     be added later once stable.
+   The module does not auto-join the division; the player must join
+   manually. Until joined, the sleeve falls through to the next
+   priority in `prioritize`.
 4. **Pick task** by walking `sleeves.prioritize`:
    - `train-hacking` — Algorithms at Rothman University until
      `trainingHackingLevel`.
