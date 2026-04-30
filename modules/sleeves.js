@@ -281,14 +281,81 @@ function assign_faction_mirror(ns, sleeveIndex, context) {
 }
 
 function assign_bladeburner(ns, sleeveIndex, context) {
-  // Phase 5 fills this in with a proper action selector. For now keep the
-  // sleeve safely on Field Analysis if API + division are present.
   try {
-    if (ns.sleeve.setToBladeburnerAction(sleeveIndex, "Field analysis")) {
-      return "field-analysis";
+    if (typeof ns.bladeburner?.inBladeburner === "function" && !ns.bladeburner.inBladeburner()) {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+
+  // Bladeburner contract type names changed over Bitburner versions; probe
+  // both spellings rather than commit to one.
+  const get_chance = (name) => {
+    for (const type of ["Contract", "Contracts"]) {
+      try {
+        return ns.bladeburner.getActionEstimatedSuccessChance(type, name, sleeveIndex);
+      } catch {
+        // try next
+      }
+    }
+    return null;
+  };
+
+  const get_remaining = (name) => {
+    for (const type of ["Contract", "Contracts"]) {
+      try {
+        return ns.bladeburner.getActionCountRemaining(type, name);
+      } catch {
+        // try next
+      }
+    }
+    return null;
+  };
+
+  // Easiest contracts first; Operations are intentionally not picked here
+  // until the sleeve API path for them is runtime-verified.
+  let needs_analysis = false;
+  for (const name of ["Bounty Hunter", "Retirement", "Tracking"]) {
+    const remaining = get_remaining(name);
+    if (remaining != null && remaining <= 0) continue;
+
+    const chance = get_chance(name);
+    if (!chance) continue;
+
+    const [min_chance, max_chance] = chance;
+    if (max_chance - min_chance > 0.15) needs_analysis = true;
+    if (min_chance < 0.70) continue;
+
+    try {
+      if (ns.sleeve.setToBladeburnerAction(sleeveIndex, "Take on contracts", name)) {
+        return `contract:${name} ${Math.round(min_chance * 100)}-${Math.round(max_chance * 100)}%`;
+      }
+    } catch {
+      // try next contract
+    }
+  }
+
+  // Wide chance variance means low intel — Field Analysis tightens estimates.
+  if (needs_analysis) {
+    try {
+      if (ns.sleeve.setToBladeburnerAction(sleeveIndex, "Field analysis")) {
+        return "general:field-analysis";
+      }
+    } catch {
+      // fall through
+    }
+  }
+
+  // Last resort: Training keeps the sleeve productive without risking failure
+  // penalties on contracts the chance gate rejected.
+  try {
+    if (ns.sleeve.setToBladeburnerAction(sleeveIndex, "Training")) {
+      return "general:training";
     }
   } catch {
     // ignore
   }
+
   return null;
 }
